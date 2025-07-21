@@ -1,6 +1,10 @@
 {
     "scale_factor": 1.0,
-    "column_widths_inspector": {},
+    "column_widths_inspector": {
+        "summary_tree_item_name_spec": 262,
+        "summary_tree_item_code": 84,
+        "summary_tree_count": 90
+    },
     "paned_window_sash_positions": {
         "0": 475,
         "1": 1425

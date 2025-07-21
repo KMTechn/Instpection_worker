@@ -17,6 +17,7 @@ import uuid
 import requests
 import zipfile
 import subprocess
+import keyboard # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< [추가] 키보드 라이브러리 임포트
 
 # ####################################################################
 # # 자동 업데이트 기능 (이벤트 로깅 추가)
@@ -229,8 +230,6 @@ class InspectionProgram:
         self.idle_check_job: Optional[str] = None
         self.focus_return_job: Optional[str] = None
         
-        self.is_defect_pedal_pressed = False
-        
         try:
             self.computer_id = hex(uuid.getnode())
         except Exception:
@@ -243,28 +242,30 @@ class InspectionProgram:
         
         self.show_worker_input_screen()
         self.root.bind('<Control-MouseWheel>', self.on_ctrl_wheel)
-        self.root.bind(f"<KeyPress-{self.DEFECT_PEDAL_KEY_NAME}>", self.on_pedal_press)
-        self.root.bind(f"<KeyRelease-{self.DEFECT_PEDAL_KEY_NAME}>", self.on_pedal_release)
+        
+        # [수정] UI 피드백을 위한 이벤트 핸들러는 유지
+        self.root.bind_all(f"<KeyPress-{self.DEFECT_PEDAL_KEY_NAME}>", self.on_pedal_press_ui_feedback)
+        self.root.bind_all(f"<KeyRelease-{self.DEFECT_PEDAL_KEY_NAME}>", self.on_pedal_release_ui_feedback)
+        
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    def on_pedal_press(self, event=None):
+    def on_pedal_press_ui_feedback(self, event=None):
+        # 이 함수는 이제 오직 시각적 피드백만을 담당합니다.
         if self.current_mode != "standard":
             return
             
-        if not self.is_defect_pedal_pressed:
-            self.is_defect_pedal_pressed = True
-            if hasattr(self, 'defect_mode_indicator'):
-                self.defect_mode_indicator.config(text="불량 모드 ON", background=self.COLOR_DEFECT, foreground='white')
+        if hasattr(self, 'defect_mode_indicator'):
+            self.defect_mode_indicator.config(text="불량 모드 ON", background=self.COLOR_DEFECT, foreground='white')
+        if hasattr(self, 'scan_entry'):
+            self.scan_entry.config(highlightcolor=self.COLOR_DEFECT)
+
+    def on_pedal_release_ui_feedback(self, event=None):
+        # 이 함수는 이제 오직 시각적 피드백만을 담당합니다.
+        if self.current_mode != "standard":
             if hasattr(self, 'scan_entry'):
                 self.scan_entry.config(highlightcolor=self.COLOR_DEFECT)
+            return
 
-    def on_pedal_release(self, event=None):
-        if self.current_mode != "standard":
-             if hasattr(self, 'scan_entry'):
-                self.scan_entry.config(highlightcolor=self.COLOR_DEFECT)
-             return
-
-        self.is_defect_pedal_pressed = False
         if hasattr(self, 'defect_mode_indicator'):
             bg_color = self.COLOR_DEFECT_BG if self.current_mode == "defective_only" else self.COLOR_BG
             self.defect_mode_indicator.config(text="", background=bg_color)
@@ -633,13 +634,14 @@ class InspectionProgram:
         self.main_progress_bar = ttk.Progressbar(parent_frame, orient='horizontal', mode='determinate', maximum=self.TRAY_SIZE, style='Main.Horizontal.TProgressbar')
         self.main_progress_bar.grid(row=2, column=0, sticky='ew', pady=(5, 20), padx=20)
 
-        counter_frame = ttk.Frame(parent_frame, style='TFrame')
-        counter_frame.grid(row=3, column=0, pady=(0, 20))
-        self.good_count_label = ttk.Label(counter_frame, text="양품: 0", style='TLabel', foreground=self.COLOR_SUCCESS, font=(self.DEFAULT_FONT, int(14*self.scale_factor), 'bold'))
+        self.counter_frame = ttk.Frame(parent_frame, style='TFrame')
+        self.counter_frame.grid(row=3, column=0, pady=(0, 20))
+        self.good_count_label = ttk.Label(self.counter_frame, text="양품: 0", style='TLabel', foreground=self.COLOR_SUCCESS, font=(self.DEFAULT_FONT, int(14*self.scale_factor), 'bold'))
+        self.main_count_label = ttk.Label(self.counter_frame, text=f"0 / {self.TRAY_SIZE}", style='MainCounter.TLabel', anchor='center')
+        self.defect_count_label = ttk.Label(self.counter_frame, text="불량: 0", style='TLabel', foreground=self.COLOR_DEFECT, font=(self.DEFAULT_FONT, int(14*self.scale_factor), 'bold'))
+        
         self.good_count_label.pack(side=tk.LEFT, padx=20)
-        self.main_count_label = ttk.Label(counter_frame, text=f"0 / {self.TRAY_SIZE}", style='MainCounter.TLabel', anchor='center')
         self.main_count_label.pack(side=tk.LEFT, padx=20)
-        self.defect_count_label = ttk.Label(counter_frame, text="불량: 0", style='TLabel', foreground=self.COLOR_DEFECT, font=(self.DEFAULT_FONT, int(14*self.scale_factor), 'bold'))
         self.defect_count_label.pack(side=tk.LEFT, padx=20)
         
         self.scan_entry = tk.Entry(parent_frame, justify='center', font=(self.DEFAULT_FONT, int(30*self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_PRIMARY, highlightthickness=3)
@@ -737,7 +739,6 @@ class InspectionProgram:
         ttk.Label(legend_frame, text="🟥 불량", style='Sidebar.TLabel', foreground=self.COLOR_DEFECT).pack(anchor='w')
         ttk.Label(legend_frame, text="🟨 휴식/대기", style='Sidebar.TLabel', foreground="#B8860B").pack(anchor='w')
 
-    # ... 이하 모든 다른 함수들은 이전 답변과 동일하게 유지됩니다 ...
     def _apply_treeview_styles(self):
         try:
             self.good_items_tree.heading('count', style='Good.Treeview.Heading')
@@ -761,24 +762,40 @@ class InspectionProgram:
         self._apply_mode_ui()
 
     def _apply_mode_ui(self):
-        self.apply_scaling()
+        self.apply_scaling() 
         
-        if hasattr(self, 'center_pane'): self.center_pane.config(style='TFrame')
-        if hasattr(self, 'mode_switch_button'):
-            if self.current_mode == "standard":
-                self.mode_switch_button.config(text="불량 전용 모드")
-                self.on_pedal_release()
-            else:
-                bg_color = self.COLOR_DEFECT_BG
-                self.mode_switch_button.config(text="일반 모드로 복귀")
-                if hasattr(self, 'defect_mode_indicator'):
-                    self.defect_mode_indicator.config(text="", background=bg_color)
-                if hasattr(self, 'scan_entry'):
-                    self.scan_entry.config(highlightcolor=self.COLOR_DEFECT)
+        if not hasattr(self, 'good_count_label'):
+            return
 
-        if hasattr(self, 'current_item_label'):
-            self._update_current_item_label()
+        self.center_pane.config(style='TFrame')
         
+        self.good_count_label.pack_forget()
+        self.main_count_label.pack_forget()
+        self.defect_count_label.pack_forget()
+        
+        if self.current_mode == "standard":
+            self.mode_switch_button.config(text="불량 전용 모드")
+            self.main_progress_bar.grid(row=2, column=0, sticky='ew', pady=(5, 20), padx=20)
+            
+            self.good_count_label.pack(side=tk.LEFT, padx=20)
+            self.main_count_label.pack(side=tk.LEFT, padx=20)
+            self.defect_count_label.pack(side=tk.LEFT, padx=20)
+            
+            self.on_pedal_release_ui_feedback()
+        else: 
+            bg_color = self.COLOR_DEFECT_BG
+            self.mode_switch_button.config(text="일반 모드로 복귀")
+            
+            self.main_progress_bar.grid_forget()
+            
+            self.defect_count_label.pack(side=tk.LEFT, padx=20)
+            
+            if hasattr(self, 'defect_mode_indicator'):
+                self.defect_mode_indicator.config(text="", background=bg_color)
+            if hasattr(self, 'scan_entry'):
+                self.scan_entry.config(highlightcolor=self.COLOR_DEFECT)
+
+        self._update_current_item_label()
         self._schedule_focus_return()
 
     def _schedule_focus_return(self, delay_ms: int = 100):
@@ -794,19 +811,28 @@ class InspectionProgram:
     def _update_current_item_label(self):
         if not (hasattr(self, 'current_item_label') and self.current_item_label.winfo_exists()): return
         
-        if self.current_mode == "defective_only":
-            self.current_item_label['text'] = "⚠️ 불량품 전용 검사 모드 ⚠️\n모든 스캔은 불량으로 자동 처리됩니다."
-            self.current_item_label['foreground'] = self.COLOR_DEFECT
-            return
-
+        text = ""
+        color = self.COLOR_TEXT
+        
         if self.current_session.master_label_code:
             name_part = f"현재 품목: {self.current_session.item_name} ({self.current_session.item_code})"
-            instruction = f"\n제품을 스캔하세요. (불량인 경우, {self.DEFECT_PEDAL_KEY_NAME} 페달을 밟은 상태에서 스캔)"
-            self.current_item_label['text'] = f"{name_part}{instruction}"
-            self.current_item_label['foreground'] = self.COLOR_TEXT
+            if self.current_mode == "standard":
+                instruction = f"\n제품을 스캔하세요. (불량인 경우, {self.DEFECT_PEDAL_KEY_NAME} 페달을 밟은 상태에서 스캔)"
+                text = f"{name_part}{instruction}"
+                color = self.COLOR_TEXT
+            else: 
+                instruction = "\n\n⚠️ 불량 전용 모드: 모든 스캔은 불량 처리됩니다."
+                text = f"{name_part}{instruction}"
+                color = self.COLOR_DEFECT
         else:
-            self.current_item_label['text'] = "현품표 라벨을 스캔하여 검사를 시작하세요."
-            self.current_item_label['foreground'] = self.COLOR_TEXT_SUBTLE
+            text = "현품표 라벨을 스캔하여 검사를 시작하세요."
+            color = self.COLOR_TEXT_SUBTLE
+            if self.current_mode == "defective_only":
+                 text += "\n\n⚠️ 불량 전용 모드"
+                 color = self.COLOR_DEFECT
+            
+        self.current_item_label['text'] = text
+        self.current_item_label['foreground'] = color
 
     def process_scan(self, event=None):
         current_time = time.monotonic()
@@ -819,16 +845,25 @@ class InspectionProgram:
         self.scan_entry.delete(0, tk.END)
         if not barcode: return
 
+        # [수정] keyboard.is_pressed로 F12 키의 현재 상태를 직접 확인
+        is_defect_scan = keyboard.is_pressed(self.DEFECT_PEDAL_KEY_NAME.lower())
+
         if barcode == "TEST_GENERATE_LOG":
-            self._log_event('TEST_QR_SCANNED', detail={'barcode': barcode})
-            self.show_status_message("테스트 QR 스캔 완료.", self.COLOR_PRIMARY)
-            return
+            if not self.current_session.master_label_code:
+                self.show_fullscreen_warning("테스트 스캔 오류", "먼저 현품표를 스캔하여 작업을 시작해야 합니다.", self.COLOR_DEFECT)
+                return
+
+            self.show_status_message("테스트 QR이 제품으로 처리되었습니다.", self.COLOR_PRIMARY)
+            
+            status = 'Defective' if self.current_mode == "defective_only" or is_defect_scan else 'Good'
+            self.record_inspection_result(barcode, status)
+            return 
         
         self._update_last_activity_time()
 
         if not self.current_session.master_label_code:
             if len(barcode) != self.ITEM_CODE_LENGTH:
-                self.show_fullscreen_warning("작업 시작 오류", "검사를 시작하려면 먼저 13자리 현품표 라벨을 스캔해야 합니다.", self.COLOR_DEFECT); return
+                self.show_fullscreen_warning("작업 시작 오류", f"검사를 시작하려면 먼저 {self.ITEM_CODE_LENGTH}자리 현품표 라벨을 스캔해야 합니다.", self.COLOR_DEFECT); return
             matched_item = next((item for item in self.items_data if item['Item Code'] == barcode), None)
             if not matched_item:
                 self.show_fullscreen_warning("품목 없음", f"현품표 코드 '{barcode}'에 해당하는 품목 정보를 찾을 수 없습니다.", self.COLOR_DEFECT); return
@@ -854,7 +889,7 @@ class InspectionProgram:
         if self.current_mode == "defective_only":
             self.record_inspection_result(barcode, 'Defective')
         else:
-            if self.is_defect_pedal_pressed:
+            if is_defect_scan: # [수정] 직접 확인한 키 상태로 분기
                 self.record_inspection_result(barcode, 'Defective')
             else:
                 self.record_inspection_result(barcode, 'Good')
@@ -865,8 +900,8 @@ class InspectionProgram:
             item_data = {'barcode': barcode, 'timestamp': datetime.datetime.now().isoformat(), 'status': 'Good'}
             self.current_session.good_items.append(item_data)
             self._log_event('INSPECTION_GOOD', detail={'barcode': barcode})
-        else:
-            if self.error_sound: self.error_sound.play()
+        else: 
+            if self.success_sound: self.success_sound.play()
             item_data = {'barcode': barcode, 'timestamp': datetime.datetime.now().isoformat(), 'status': 'Defective'}
             self.current_session.defective_items.append(item_data)
             self.current_session.has_error_or_reset = True
@@ -930,7 +965,7 @@ class InspectionProgram:
         self._set_idle_style(is_idle=True)
         self._update_center_display()
         if self.current_mode == "standard":
-            self.on_pedal_release()
+            self.on_pedal_release_ui_feedback()
 
     def undo_last_inspection(self):
         self._update_last_activity_time()
