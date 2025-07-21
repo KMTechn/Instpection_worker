@@ -25,7 +25,7 @@ import keyboard # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< [추가] 키보
 
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Inspection_program"
-CURRENT_VERSION = "v0.0.1" 
+CURRENT_VERSION = "v1.0.0" 
 
 def check_for_updates(app_instance):
     try:
@@ -1225,6 +1225,5 @@ class InspectionProgram:
 
 if __name__ == "__main__":
     app = InspectionProgram()
-    # 자동 업데이트를 원하지 않으면 아래 줄을 주석 처리하세요.
-    # check_and_apply_updates(app) 
+    check_and_apply_updates(app) 
     app.run()
