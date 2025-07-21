@@ -1,51 +1,53 @@
-# 워크플로우의 이름. GitHub Actions 탭에 표시됩니다.
-name: Create Release
+# 워크플로우 이름
+name: Build and Release Inspection Program
 
-# 워크플로우가 실행될 조건 (트리거)
+# 'v'로 시작하는 태그가 푸시될 때 실행
 on:
   push:
-    # 'v'로 시작하는 태그(tag)가 푸시(push)되었을 때만 실행됩니다.
-    # 예: v1.0, v1.2.3, v2.0-beta
     tags:
-      - 'v*.*.*'
-      - 'v*.*'
       - 'v*'
 
-# 실행될 작업(job)들의 목록
+# 작업에 저장소 쓰기 권한 부여
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
-    # 작업을 실행할 가상 환경의 종류
-    runs-on: ubuntu-latest
+    # Windows 환경에서 실행
+    runs-on: windows-latest
 
-    # 작업의 단계(step)들
     steps:
-      # 1. 코드 체크아웃 (Checkout)
-      #   - 워크플로우가 저장소의 코드에 접근할 수 있도록 소스 코드를 내려받습니다.
+      # 1. 소스 코드 내려받기
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. 릴리즈 노트 생성 및 릴리즈 발행
-      #   - softprops/action-gh-release 액션을 사용하여 릴리즈를 자동 생성합니다.
-      #   - 이 액션은 이전 태그부터 현재 태그까지의 커밋 메시지를 바탕으로
-      #     릴리즈 노트를 자동으로 만들어주는 기능이 포함되어 있습니다.
-      - name: Create Release
+      # 2. 파이썬 설치 (사용자 환경과 동일한 3.12 버전으로 설정)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 3. requirements.txt와 PyInstaller 설치
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # 4. PyInstaller로 .exe 파일 빌드
+      #    - 이름, 아이콘, 포함할 폴더(assets, config) 등을 프로젝트에 맞게 수정
+      - name: Build with PyInstaller
+        run: pyinstaller --name "Inspection_worker" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame --hidden-import Pillow --hidden-import keyboard Inspection_worker.py
+
+      # 5. 빌드 결과물(dist/Inspection_worker 폴더)을 zip 파일로 압축
+      - name: Zip the build folder
+        run: Compress-Archive -Path dist/Inspection_worker -DestinationPath "Inspection_worker-${{ github.ref_name }}.zip"
+      
+      # 6. 릴리즈 생성 및 압축 파일(Asset) 업로드
+      #    - 릴리즈 노트를 자동으로 생성하도록 설정
+      - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
-          # 릴리즈의 제목을 "Release [태그이름]" 형식으로 지정합니다.
-          # ${{ github.ref_name }}은 워크플로우를 실행시킨 태그의 이름입니다 (예: v1.0.1).
-          name: Release ${{ github.ref_name }}
-
-          # true로 설정하면, 이전 태그와의 차이점을 기반으로 릴리즈 노트를 자동으로 생성합니다.
-          # 이것이 '릴리즈 노트 자동 작성'의 핵심 기능입니다. 📄
+          files: "Inspection_worker-${{ github.ref_name }}.zip"
+          name: "Release ${{ github.ref_name }}"
           generate_release_notes: true
-
-          # GITHUB_TOKEN은 GitHub Actions가 API 요청을 보낼 때 사용하는 임시 인증 토큰입니다.
-          # GitHub이 자동으로 생성해주므로 그대로 사용하면 됩니다.
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-          # (선택 사항) 빌드된 파일을 릴리즈에 첨부하고 싶을 때 사용합니다.
-          #   - 아래 주석을 풀고 파일 경로를 지정하면 해당 파일을 릴리즈 에셋(Asset)으로 업로드합니다.
-          #   - 예를 들어, 빌드 스크립트를 실행한 후 생성된 .zip 파일이나 .exe 파일을 첨부할 수 있습니다.
-          # files: |
-          #   path/to/your/asset.zip
-          #   path/to/another/asset.exe
