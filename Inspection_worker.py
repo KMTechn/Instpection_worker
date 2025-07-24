@@ -24,7 +24,7 @@ import keyboard
 # ####################################################################
 
 REPO_OWNER = "KMTechn"
-REPO_NAME = "Inspection_program"
+REPO_NAME = "Instpection_worker"
 CURRENT_VERSION = "v1.0.1"
 
 def check_for_updates(app_instance):
