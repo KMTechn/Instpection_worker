@@ -25,7 +25,7 @@ import keyboard # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< [추가] 키보
 
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Inspection_program"
-CURRENT_VERSION = "v1.0.0" 
+CURRENT_VERSION = "v1.0.1"
 
 def check_for_updates(app_instance):
     try:
@@ -136,7 +136,7 @@ class InspectionSession:
     has_error_or_reset: bool = False
     is_test_tray: bool = False
     is_partial_submission: bool = False
-    is_restored_session: bool = False
+    is_restored_tray: bool = False  # [변경] is_restored_session -> is_restored_tray
 
 def resource_path(relative_path: str) -> str:
     try:
@@ -474,7 +474,7 @@ class InspectionProgram:
                 with open(log_path, 'r', encoding='utf-8-sig') as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        if row.get('event') == 'SESSION_COMPLETE':
+                        if row.get('event') == 'TRAY_COMPLETE': # [변경] SESSION_COMPLETE -> TRAY_COMPLETE
                             try:
                                 details = json.loads(row['details'])
                                 details['timestamp'] = datetime.datetime.fromisoformat(row['timestamp'])
@@ -491,7 +491,7 @@ class InspectionProgram:
             if session.get('is_test_tray', False): self.work_summary[item_code]['test_count'] += 1
             else: self.work_summary[item_code]['count'] += 1
             if not session.get('is_test_tray', False) and not session.get('is_partial_submission', False): self.total_tray_count += 1
-        clean_sessions = [s for s in current_week_sessions_list if (s.get('good_count') == self.TRAY_SIZE and not s.get('has_error_or_reset') and not s.get('is_partial_submission') and not s.get('is_restored_session') and not s.get('is_test_tray'))]
+        clean_sessions = [s for s in current_week_sessions_list if (s.get('good_count') == self.TRAY_SIZE and not s.get('has_error_or_reset') and not s.get('is_partial_submission') and not s.get('is_restored_tray') and not s.get('is_test_tray'))] # [변경] is_restored_session -> is_restored_tray
         if clean_sessions:
             MINIMUM_REALISTIC_TIME_PER_PC = 2.0
             valid_times = [float(s.get('work_time_sec', 0.0)) for s in clean_sessions if float(s.get('work_time_sec', 0.0)) / self.TRAY_SIZE >= MINIMUM_REALISTIC_TIME_PER_PC]
@@ -518,13 +518,13 @@ class InspectionProgram:
             if saved_worker == self.worker_name:
                 if messagebox.askyesno("이전 작업 복구", f"이전에 마치지 못한 검사 작업을 이어서 시작하시겠습니까?\n\n{msg_base}"):
                     self._restore_session_from_state(saved_state)
-                    self._log_event('SESSION_RESTORE')
+                    self._log_event('TRAY_RESTORE') # [변경] SESSION_RESTORE -> TRAY_RESTORE
                 else: self._delete_current_session_state()
             else:
                 response = messagebox.askyesnocancel("작업 인수 확인", f"이전 작업자 '{saved_worker}'님이 마치지 않은 작업이 있습니다.\n\n이 작업을 이어서 진행하시겠습니까?\n\n{msg_base}")
                 if response is True:
                     self._restore_session_from_state(saved_state)
-                    self._log_event('SESSION_TAKEOVER', detail={'previous': saved_worker, 'new': self.worker_name})
+                    self._log_event('TRAY_TAKEOVER', detail={'previous': saved_worker, 'new': self.worker_name}) # [변경] SESSION_TAKEOVER -> TRAY_TAKEOVER
                 elif response is False:
                     if messagebox.askyesno("작업 삭제", "이전 작업을 영구적으로 삭제하시겠습니까?"):
                         self._delete_current_session_state()
@@ -536,6 +536,10 @@ class InspectionProgram:
             self._delete_current_session_state()
 
     def _restore_session_from_state(self, state: Dict[str, Any]):
+        # [추가] 이전 버전 상태 파일과의 호환성을 위해 키 이름 변경
+        if 'is_restored_session' in state and 'is_restored_tray' not in state:
+            state['is_restored_tray'] = state.pop('is_restored_session')
+
         state['start_time'] = datetime.datetime.fromisoformat(state['start_time']) if state.get('start_time') else None
         self.current_session = InspectionSession(**state)
         self.show_status_message("이전 검사 작업을 복구했습니다.", self.COLOR_PRIMARY)
@@ -828,8 +832,8 @@ class InspectionProgram:
             text = "현품표 라벨을 스캔하여 검사를 시작하세요."
             color = self.COLOR_TEXT_SUBTLE
             if self.current_mode == "defective_only":
-                 text += "\n\n⚠️ 불량 전용 모드"
-                 color = self.COLOR_DEFECT
+                text += "\n\n⚠️ 불량 전용 모드"
+                color = self.COLOR_DEFECT
             
         self.current_item_label['text'] = text
         self.current_item_label['foreground'] = color
@@ -934,14 +938,15 @@ class InspectionProgram:
 
     def complete_session(self):
         self._stop_stopwatch(); self._stop_idle_checker(); self.undo_button['state'] = tk.DISABLED
-        is_test = self.current_session.is_test_tray; has_error = self.current_session.has_error_or_reset; is_partial = self.current_session.is_partial_submission; is_restored = self.current_session.is_restored_session
+        is_test = self.current_session.is_test_tray; has_error = self.current_session.has_error_or_reset; is_partial = self.current_session.is_partial_submission; is_restored = self.current_session.is_restored_tray # [변경]
         if not is_test:
-            self._log_event('SESSION_COMPLETE', detail={
+            # [변경] SESSION_COMPLETE -> TRAY_COMPLETE, is_restored_session -> is_restored_tray
+            self._log_event('TRAY_COMPLETE', detail={
                 'master_label_code': self.current_session.master_label_code, 'item_code': self.current_session.item_code, 'item_name': self.current_session.item_name,
                 'total_scan_count': len(self.current_session.scanned_barcodes), 'good_count': len(self.current_session.good_items), 'defective_count': len(self.current_session.defective_items),
                 'good_items': self.current_session.good_items, 'defective_items': self.current_session.defective_items,
                 'work_time_sec': self.current_session.stopwatch_seconds, 'error_count': self.current_session.mismatch_error_count,
-                'total_idle_seconds': self.current_session.total_idle_seconds, 'has_error_or_reset': has_error, 'is_partial_submission': is_partial, 'is_restored_session': is_restored,
+                'total_idle_seconds': self.current_session.total_idle_seconds, 'has_error_or_reset': has_error, 'is_partial_submission': is_partial, 'is_restored_tray': is_restored,
                 'start_time': self.current_session.start_time.isoformat() if self.current_session.start_time else None, 'end_time': datetime.datetime.now().isoformat()})
         item_code = self.current_session.item_code
         if item_code not in self.work_summary: self.work_summary[item_code] = {'name': self.current_session.item_name, 'spec': self.current_session.item_spec, 'count': 0, 'test_count': 0}
@@ -997,7 +1002,7 @@ class InspectionProgram:
         self._update_last_activity_time()
         if self.current_session.master_label_code and messagebox.askyesno("확인", "현재 진행중인 검사를 초기화하시겠습니까?"):
             self._stop_stopwatch(); self._stop_idle_checker(); self.is_idle = False
-            self._log_event('SESSION_RESET', detail={'scan_count': len(self.current_session.scanned_barcodes)})
+            self._log_event('TRAY_RESET', detail={'scan_count': len(self.current_session.scanned_barcodes)}) # [변경] SESSION_RESET -> TRAY_RESET
             self.current_session = InspectionSession()
             self._redraw_scan_trees()
             self._delete_current_session_state()
@@ -1199,7 +1204,7 @@ class InspectionProgram:
 
     def _log_event(self, event_type: str, detail: Optional[Dict] = None):
         if not self.worker_name and event_type not in ['UPDATE_CHECK_FOUND', 'UPDATE_STARTED', 'UPDATE_FAILED', 'ITEM_DATA_LOADED']:
-             return
+            return
         
         worker = self.worker_name if self.worker_name else "System"
         
