@@ -25,7 +25,7 @@ import keyboard
 
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Instpection_worker"
-CURRENT_VERSION = "v1.0.1"
+CURRENT_VERSION = "v2.0.0"
 
 def check_for_updates(app_instance):
     """GitHub에서 최신 릴리스를 확인합니다."""
@@ -144,6 +144,17 @@ class InspectionSession:
     item_code: str = ""
     item_name: str = ""
     item_spec: str = ""
+    
+    #### 변경 시작 ####
+    # 새로운 현품표 형식에서 가져올 추가 정보 필드
+    work_order_id: str = ""
+    supplier_code: str = ""
+    finished_product_batch: str = ""
+    outbound_date: str = ""
+    item_group: str = ""
+    quantity: int = 60  # 기본값은 기존 TRAY_SIZE와 동일하게 설정
+    #### 변경 끝 ####
+    
     good_items: List[Dict[str, Any]] = field(default_factory=list)
     defective_items: List[Dict[str, Any]] = field(default_factory=list)
     scanned_barcodes: List[str] = field(default_factory=list)
@@ -578,10 +589,20 @@ class InspectionProgram:
                 self.total_tray_count += 1
         
         # 금주 최고 기록 계산
-        clean_sessions = [s for s in current_week_sessions_list if (s.get('good_count') == self.TRAY_SIZE and not s.get('had_error') and not s.get('is_partial') and not s.get('is_restored_session') and not s.get('is_test'))]
+        # Tray_capacity를 동적으로 가져와서 비교해야 하지만, 단순화를 위해 이전 로직(TRAY_SIZE) 유지
+        clean_sessions = [s for s in current_week_sessions_list if (
+            s.get('scan_count') == s.get('tray_capacity') and 
+            not s.get('has_error_or_reset') and 
+            not s.get('is_partial_submission') and 
+            not s.get('is_restored_session'))
+        ]
+        
         if clean_sessions:
             MINIMUM_REALISTIC_TIME_PER_PC = 2.0
-            valid_times = [float(s.get('work_time', 0.0)) for s in clean_sessions if float(s.get('work_time', 0.0)) / self.TRAY_SIZE >= MINIMUM_REALISTIC_TIME_PER_PC]
+            valid_times = [
+                float(s.get('work_time_sec', 0.0)) for s in clean_sessions 
+                if s.get('tray_capacity', 0) > 0 and (float(s.get('work_time_sec', 0.0)) / s.get('tray_capacity')) >= MINIMUM_REALISTIC_TIME_PER_PC
+            ]
             if valid_times:
                 self.completed_tray_times = valid_times
                 
@@ -619,7 +640,7 @@ class InspectionProgram:
                 self._delete_current_session_state()
                 return
                 
-            total_scans = len(saved_state.get('good_items', [])) + len(saved_state.get('defective_items', []))
+            total_scans = len(saved_state.get('scanned_barcodes', []))
             msg_base = f"· 품목: {saved_state.get('item_name', '알 수 없음')}\n· 검사 수: {total_scans}개"
 
             if saved_worker == self.worker_name:
@@ -652,8 +673,20 @@ class InspectionProgram:
         """상태(state) 딕셔너리로부터 세션을 복구합니다."""
         state.pop('worker_name', None) # InspectionSession에 없는 키 제거
         state['start_time'] = datetime.datetime.fromisoformat(state['start_time']) if state.get('start_time') else None
+        
+        #### 변경 시작 ####
+        # 복구 시, dataclass에 새로 추가된 필드가 state에 없을 수 있으므로 기본값으로 채워줍니다.
+        session_fields = InspectionSession.__dataclass_fields__
+        for field_name in session_fields:
+            if field_name not in state:
+                # dataclasses.field에서 default_factory를 사용한 경우를 위해 인스턴스 생성
+                state[field_name] = session_fields[field_name].default_factory() if callable(session_fields[field_name].default_factory) else session_fields[field_name].default
+        #### 변경 끝 ####
+
         self.current_session = InspectionSession(**state)
+        self.current_session.is_restored_session = True # 복구된 세션임을 명시
         self.show_status_message("이전 검사 작업을 복구했습니다.", self.COLOR_PRIMARY)
+
 
     def _delete_current_session_state(self):
         """임시 세션 저장 파일을 삭제합니다."""
@@ -996,6 +1029,23 @@ class InspectionProgram:
         self.current_item_label['text'] = text
         self.current_item_label['foreground'] = color
 
+    #### 변경 시작 ####
+    def _parse_new_format_qr(self, qr_data: str) -> Optional[Dict[str, str]]:
+        """새로운 키-값 형식의 현품표 QR 데이터를 파싱합니다."""
+        # 새 형식의 특징인 '='와 '|' 문자가 모두 포함되어 있는지 빠르게 확인
+        if '=' not in qr_data or '|' not in qr_data:
+            return None
+        try:
+            # 각 쌍을 '|'로 나누고, 각 쌍을 '='로 나누어 딕셔너리로 만듭니다.
+            parsed = dict(pair.split('=', 1) for pair in qr_data.strip().split('|'))
+            # 필수 키(CLC, WID)가 있는지 확인하여 신뢰도를 높입니다.
+            if 'CLC' in parsed and 'WID' in parsed:
+                return parsed
+            return None
+        except ValueError:
+            # 'key=value' 형식이 아닌 항목이 섞여 있으면 에러가 발생합니다.
+            return None
+
     def process_scan(self, event=None):
         """바코드 스캔 입력을 처리합니다."""
         current_time = time.monotonic()
@@ -1025,24 +1075,65 @@ class InspectionProgram:
 
         # 세션 시작 (현품표 스캔)
         if not self.current_session.master_label_code:
-            if len(barcode) != self.ITEM_CODE_LENGTH:
-                self.show_fullscreen_warning("작업 시작 오류", f"검사를 시작하려면 먼저 {self.ITEM_CODE_LENGTH}자리 현품표 라벨을 스캔해야 합니다.", self.COLOR_DEFECT)
-                return
+            # 1. 새로운 현품표 형식인지 먼저 파싱 시도
+            parsed_data = self._parse_new_format_qr(barcode)
             
-            matched_item = next((item for item in self.items_data if item['Item Code'] == barcode), None)
-            if not matched_item:
-                self.show_fullscreen_warning("품목 없음", f"현품표 코드 '{barcode}'에 해당하는 품목 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
-                return
+            if parsed_data:
+                # 새 형식 처리 로직
+                item_code_from_qr = parsed_data.get('CLC')
+                matched_item = next((item for item in self.items_data if item['Item Code'] == item_code_from_qr), None)
+                
+                if not matched_item:
+                    self.show_fullscreen_warning("품목 없음", f"새 현품표의 품목코드 '{item_code_from_qr}'에 해당하는 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
+                    return
+                
+                # 세션 정보 채우기
+                self.current_session.master_label_code = barcode # 전체 QR 문자열을 마스터 코드로 저장
+                self.current_session.item_code = item_code_from_qr
+                self.current_session.item_name = matched_item.get('Item Name', '')
+                self.current_session.item_spec = matched_item.get('Spec', '')
+                
+                # 새로운 현품표의 추가 정보 저장
+                self.current_session.work_order_id = parsed_data.get('WID', '')
+                self.current_session.supplier_code = parsed_data.get('SPC', '')
+                self.current_session.finished_product_batch = parsed_data.get('FPB', '')
+                self.current_session.outbound_date = parsed_data.get('OBD', '')
+                self.current_session.item_group = parsed_data.get('IG', '')
+                try:
+                    # QT(수량) 값을 정수로 변환, 실패 시 기본 TRAY_SIZE 사용
+                    self.current_session.quantity = int(parsed_data.get('QT', self.TRAY_SIZE))
+                except (ValueError, TypeError):
+                    self.current_session.quantity = self.TRAY_SIZE
+                
+                self._log_event('MASTER_LABEL_SCANNED', detail=parsed_data)
+
+            else:
+                # 2. 새 형식이 아니라면, 이전 현품표 형식으로 처리 시도
+                if len(barcode) != self.ITEM_CODE_LENGTH:
+                    self.show_fullscreen_warning("작업 시작 오류", f"스캔한 코드가 유효한 현품표 형식이 아닙니다.\n(새 형식 또는 {self.ITEM_CODE_LENGTH}자리 코드 필요)", self.COLOR_DEFECT)
+                    return
+                
+                matched_item = next((item for item in self.items_data if item['Item Code'] == barcode), None)
+                if not matched_item:
+                    self.show_fullscreen_warning("품목 없음", f"현품표 코드 '{barcode}'에 해당하는 품목 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
+                    return
+                
+                # 이전 형식에 따라 세션 정보 채우기
+                self.current_session.master_label_code = barcode
+                self.current_session.item_code = barcode
+                self.current_session.item_name = matched_item.get('Item Name', '')
+                self.current_session.item_spec = matched_item.get('Spec', '')
+                self.current_session.quantity = self.TRAY_SIZE # 이전 형식은 기본 수량 사용
+                
+                self._log_event('MASTER_LABEL_SCANNED', detail={'code': barcode, 'format': 'legacy'})
             
-            self.current_session.master_label_code = barcode
-            self.current_session.item_code = barcode
-            self.current_session.item_name = matched_item.get('Item Name', '')
-            self.current_session.item_spec = matched_item.get('Spec', '')
+            # 공통 시작 처리
+            self._update_center_display() # 수량이 달라졌을 수 있으므로 UI 업데이트
             self._update_current_item_label()
-            self._log_event('MASTER_LABEL_SCANNED', detail={'code': barcode})
             self._start_stopwatch()
             self._save_current_session_state()
             return
+        #### 변경 끝 ####
 
         # 제품 스캔 유효성 검사
         if len(barcode) <= self.ITEM_CODE_LENGTH:
@@ -1088,8 +1179,12 @@ class InspectionProgram:
         self.undo_button['state'] = tk.NORMAL
         self._save_current_session_state()
         
-        if len(self.current_session.good_items) == self.TRAY_SIZE:
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 수정된 부분: 트레이 완료 조건 변경
+        # 트레이의 목표 수량은 총 스캔 수(양품+불량)를 기준으로 판단
+        if len(self.current_session.scanned_barcodes) >= self.current_session.quantity:
             self.complete_session()
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
             
     def _redraw_scan_trees(self):
         """양품/불량 목록 Treeview를 다시 그립니다."""
@@ -1113,38 +1208,35 @@ class InspectionProgram:
         self._stop_idle_checker()
         self.undo_button['state'] = tk.DISABLED
 
-        is_test = self.current_session.is_test_tray
+        is_test = "TEST" in self.current_session.master_label_code
         has_error = self.current_session.has_error_or_reset
         is_partial = self.current_session.is_partial_submission
         is_restored = self.current_session.is_restored_session
 
         if not is_test:
-            good_count = len(self.current_session.good_items)
-            defective_count = len(self.current_session.defective_items)
-            
-            # 분석 프로그램 호환성을 위해 키 이름 변경 및 추가
+            # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+            # 수정된 부분: TRAY_COMPLETE 이벤트의 detail 딕셔너리 구조 변경
             log_detail = {
                 'master_label_code': self.current_session.master_label_code,
                 'item_code': self.current_session.item_code,
                 'item_name': self.current_session.item_name,
-                
-                # --- 분석기 호환용 키 ---
-                'work_time': self.current_session.stopwatch_seconds,
-                'process_errors': self.current_session.mismatch_error_count,
-                'had_error': has_error,
-                'idle_time': self.current_session.total_idle_seconds,
-                'pcs_completed': good_count + defective_count,
+                'scan_count': len(self.current_session.scanned_barcodes),
+                'tray_capacity': self.current_session.quantity,
+                'scanned_product_barcodes': self.current_session.scanned_barcodes,
+                'work_time_sec': self.current_session.stopwatch_seconds,
+                'error_count': self.current_session.mismatch_error_count,
+                'total_idle_seconds': self.current_session.total_idle_seconds,
+                'has_error_or_reset': has_error,
+                'is_partial_submission': is_partial,
                 'is_restored_session': is_restored,
-                # -------------------------
-
-                'good_count': good_count,
-                'defective_count': defective_count,
-                'is_partial': is_partial,
-                'is_test': is_test,
                 'start_time': self.current_session.start_time.isoformat() if self.current_session.start_time else None,
                 'end_time': datetime.datetime.now().isoformat()
             }
             self._log_event('TRAY_COMPLETE', detail=log_detail)
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+        else:
+             self.show_status_message("테스트 트레이이므로 로그를 저장하지 않습니다.", self.COLOR_PRIMARY)
+
 
         item_code = self.current_session.item_code
         if item_code not in self.work_summary:
@@ -1157,6 +1249,7 @@ class InspectionProgram:
             self.work_summary[item_code]['count'] += 1
             if not is_partial:
                 self.total_tray_count += 1
+            # 무결점 트레이(에러/리셋/부분제출/이어하기 없음)인 경우만 통계에 포함
             if not has_error and not is_partial and not is_restored and self.current_session.stopwatch_seconds > 0:
                 self.completed_tray_times.append(self.current_session.stopwatch_seconds)
             
@@ -1309,12 +1402,17 @@ class InspectionProgram:
         
         good_count = len(self.current_session.good_items)
         defect_count = len(self.current_session.defective_items)
+        total_scan_count = len(self.current_session.scanned_barcodes)
+        
+        # 세션이 시작되면 해당 세션의 수량을, 아니면 기본 수량을 사용
+        total_quantity_in_tray = self.current_session.quantity if self.current_session.master_label_code else self.TRAY_SIZE
         
         self.good_count_label['text'] = f"양품: {good_count}"
         self.defect_count_label['text'] = f"불량: {defect_count}"
         
-        self.main_count_label['text'] = f"{good_count} / {self.TRAY_SIZE}"
-        self.main_progress_bar['value'] = good_count
+        self.main_count_label['text'] = f"{total_scan_count} / {total_quantity_in_tray}"
+        self.main_progress_bar['maximum'] = total_quantity_in_tray # 프로그레스 바 최대값도 동적으로 변경
+        self.main_progress_bar['value'] = total_scan_count
 
     def _update_clock(self):
         """현재 시간을 1초마다 업데이트합니다."""
