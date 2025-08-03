@@ -1,13 +1,16 @@
 {
     "scale_factor": 1.0,
     "column_widths_inspector": {
-        "summary_tree_item_name_spec": 262,
-        "summary_tree_item_code": 84,
-        "summary_tree_count": 90
+        "summary_tree_item_name_spec": 402,
+        "summary_tree_item_code": 184,
+        "summary_tree_count": 90,
+        "good_summary_item_name_spec": 376,
+        "good_summary_item_code": 154,
+        "good_summary_count": 120
     },
     "paned_window_sash_positions": {
-        "0": 475,
-        "1": 1425
+        "0": 635,
+        "1": 1905
     },
     "scan_delay": 0.0
 }
