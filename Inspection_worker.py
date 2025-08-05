@@ -19,6 +19,8 @@ import zipfile
 import subprocess
 import keyboard
 import random
+import base64
+import binascii
 
 # ####################################################################
 # # 자동 업데이트 기능
@@ -26,7 +28,7 @@ import random
 
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Instpection_worker"
-CURRENT_VERSION = "v2.0.2" 
+CURRENT_VERSION = "v2.0.3" 
 
 def check_for_updates(app_instance):
     """GitHub에서 최신 릴리스를 확인합니다."""
@@ -1252,11 +1254,42 @@ class InspectionProgram:
             self.scan_entry.delete(0, tk.END)
             return
         self.last_scan_time = current_time
-        barcode = self.scan_entry.get().strip()
+        
+        # 원본 스캔 데이터. Base64일 수 있음.
+        raw_barcode = self.scan_entry.get().strip()
         self.scan_entry.delete(0, tk.END)
-        if not barcode: return
+        if not raw_barcode: return
+
+        # Base64 디코딩 시도.
+        # 'barcode' 변수는 이후 로직에서 사용할 처리된(디코딩된) 데이터입니다.
+        barcode = raw_barcode
+        try:
+            # 현품표 QR은 Base64로 인코딩될 수 있습니다. '|' 구분자가 없는 긴 문자열이면 디코딩을 시도합니다.
+            # 일반 제품 바코드는 이 조건에 해당하지 않으므로 불필요한 디코딩 시도를 줄입니다.
+            if '|' not in raw_barcode and len(raw_barcode) > 20:
+                # 웹 안전 Base64 인코딩(-, _ 사용)과 표준 인코딩(+, / 사용)을 모두 처리합니다.
+                temp_barcode = raw_barcode.replace('-', '+').replace('_', '/')
+                # 패딩이 없는 경우를 대비해 자동으로 추가합니다.
+                padded_barcode = temp_barcode + '=' * (-len(temp_barcode) % 4)
+                
+                decoded_bytes = base64.b64decode(padded_barcode)
+                decoded_string = decoded_bytes.decode('utf-8')
+                
+                # 디코딩된 결과가 유효한 현품표 형식인지 추가로 확인합니다.
+                if '|' in decoded_string and '=' in decoded_string:
+                    barcode = decoded_string  # 디코딩 성공, 이 값을 사용합니다.
+                    self._log_event('QR_BASE64_DECODED', detail={'original': raw_barcode, 'decoded': barcode})
+                # else: 디코딩은 됐지만 우리 형식이 아니면 원본을 그대로 사용합니다 (예: 그냥 긴 제품 바코드).
+                
+        except (binascii.Error, UnicodeDecodeError):
+            # Base64 형식이 아니거나, UTF-8로 디코딩할 수 없는 경우입니다.
+            # 일반 제품 바코드를 스캔했을 때 정상적으로 발생하는 예외이므로, 원본 값을 그대로 사용합니다.
+            pass
 
         self._update_last_activity_time()
+        
+        # 이제부터 'barcode' 변수는 항상 디코딩된(또는 원래부터 디코딩이 필요 없던) 값을 가집니다.
+        # 나머지 기존 로직은 이 'barcode' 변수를 사용하여 그대로 작동합니다.
         
         if barcode.upper().startswith("TEST_LOG_"):
             try:
@@ -1298,7 +1331,9 @@ class InspectionProgram:
                 self.show_fullscreen_warning("작업 시작 오류", "먼저 현품표 라벨을 스캔하여 작업을 시작해주세요.", self.COLOR_DEFECT)
                 return
             
-            if len(barcode) != self.ITEM_CODE_LENGTH and barcode in self.completed_master_labels:
+            # 신형 QR 현품표(고유 식별자)는 중복을 허용하지 않습니다.
+            # 구형 현품표(단순 품번)는 다른 팔레트에 대해 중복될 수 있으므로 중복 검사를 하지 않습니다.
+            if parsed_data and barcode in self.completed_master_labels:
                 self.show_fullscreen_warning("작업 중복", f"이미 완료된 현품표입니다.\n\n{barcode}", self.COLOR_DEFECT)
                 self._log_event('SCAN_FAIL_DUPLICATE_MASTER', detail={'barcode': barcode})
                 return
@@ -1310,7 +1345,7 @@ class InspectionProgram:
                     self.show_fullscreen_warning("품목 없음", f"새 현품표의 품목코드 '{item_code_from_qr}'에 해당하는 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
                     return
                 self.current_session.phs = parsed_data.get('PHS', '')
-                self.current_session.master_label_code = barcode
+                self.current_session.master_label_code = barcode # Store decoded string
                 self.current_session.item_code = item_code_from_qr
                 self.current_session.item_name = matched_item.get('Item Name', '')
                 self.current_session.item_spec = matched_item.get('Spec', '')
@@ -1322,7 +1357,7 @@ class InspectionProgram:
                 try: self.current_session.quantity = int(parsed_data.get('QT', self.TRAY_SIZE))
                 except (ValueError, TypeError): self.current_session.quantity = self.TRAY_SIZE
                 self._log_event('MASTER_LABEL_SCANNED', detail=parsed_data)
-            else:
+            else: # Legacy format
                 matched_item = next((item for item in self.items_data if item['Item Code'] == barcode), None)
                 if not matched_item:
                     self.show_fullscreen_warning("품목 없음", f"현품표 코드 '{barcode}'에 해당하는 품목 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
@@ -1540,7 +1575,8 @@ class InspectionProgram:
         }
         self._log_event('TRAY_COMPLETE', detail=log_detail)
         
-        if not is_test:
+        # 신형 QR 현품표만 완료 목록에 추가 (고유 식별자)
+        if not is_test and self._parse_new_format_qr(self.current_session.master_label_code):
             self.completed_master_labels.add(self.current_session.master_label_code)
 
         item_code = self.current_session.item_code
