@@ -159,7 +159,6 @@ class InspectionSession:
     is_test_tray: bool = False
     is_partial_submission: bool = False
     is_restored_session: bool = False
-    is_defective_only_session: bool = False
 
 def resource_path(relative_path: str) -> str:
     """ PyInstaller로 패키징했을 때의 리소스 경로를 가져옵니다. """
@@ -204,11 +203,11 @@ class InspectionProgram:
         self.root.state('zoomed')
         self.root.configure(bg=self.COLOR_BG)
         
-        self.current_mode = "standard"
-        self.last_inspection_mode = "standard" 
+        self.current_mode = "standard" # 'standard' 또는 'rework'
         
         self.log_queue: queue.Queue = queue.Queue()
         self.log_file_path: Optional[str] = None
+        self.rework_log_file_path: Optional[str] = None
         self.log_thread = threading.Thread(target=self._event_log_writer, daemon=True)
         self.log_thread.start()
 
@@ -278,6 +277,9 @@ class InspectionProgram:
         self.root.bind('<Control-MouseWheel>', self.on_ctrl_wheel)
         self.root.bind_all(f"<KeyPress-{self.DEFECT_PEDAL_KEY_NAME}>", self.on_pedal_press_ui_feedback)
         self.root.bind_all(f"<KeyRelease-{self.DEFECT_PEDAL_KEY_NAME}>", self.on_pedal_release_ui_feedback)
+        
+        self.is_auto_testing_defect = False
+
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def on_pedal_press_ui_feedback(self, event=None):
@@ -289,14 +291,12 @@ class InspectionProgram:
 
     def on_pedal_release_ui_feedback(self, event=None):
         bg_color = self.COLOR_BG
-        if self.current_mode == "defective_only" or (self.current_session.master_label_code and self.current_session.is_defective_only_session):
-             bg_color = self.COLOR_DEFECT_BG
-        elif self.current_mode == "rework": bg_color = self.COLOR_REWORK_BG
+        if self.current_mode == "rework": 
+            bg_color = self.COLOR_REWORK_BG
         
         highlight_color = self.COLOR_PRIMARY
-        if self.current_mode == "defective_only" or (self.current_session.master_label_code and self.current_session.is_defective_only_session):
-            highlight_color = self.COLOR_DEFECT
-        elif self.current_mode == "rework": highlight_color = self.COLOR_REWORK
+        if self.current_mode == "rework": 
+            highlight_color = self.COLOR_REWORK
 
         if hasattr(self, 'defect_mode_indicator'):
             self.defect_mode_indicator.config(text="", background=bg_color)
@@ -376,13 +376,9 @@ class InspectionProgram:
         s, m, l, xl, xxl = (int(factor * self.scale_factor) for factor in [base, base + 2, base + 8, base + 20, base + 60])
         
         bg_color = self.COLOR_BG
-        is_defective_state = (self.current_mode == "defective_only") or \
-                             (self.current_session.master_label_code and self.current_session.is_defective_only_session)
         is_rework_state = self.current_mode == "rework"
 
-        if is_defective_state:
-            bg_color = self.COLOR_DEFECT_BG
-        elif is_rework_state:
+        if is_rework_state:
             bg_color = self.COLOR_REWORK_BG
 
         fg_color = self.COLOR_TEXT
@@ -475,13 +471,18 @@ class InspectionProgram:
             self._cancel_all_jobs()
             self.worker_name = ""
             self.show_worker_input_screen()
-
+    
     def _load_session_state(self):
         today = datetime.date.today()
         sanitized_name = re.sub(r'[\\/*?:"<>|]', "", self.worker_name)
+        
         self.log_file_path = os.path.join(self.save_folder, f"검사작업이벤트로그_{sanitized_name}_{today.strftime('%Y%m%d')}.csv")
         if not os.path.exists(self.log_file_path):
             self._log_event('LOG_FILE_CREATED', detail={'path': self.log_file_path})
+
+        self.rework_log_file_path = os.path.join(self.save_folder, f"리워크작업이벤트로그_{sanitized_name}_{today.strftime('%Y%m%d')}.csv")
+        if not os.path.exists(self.rework_log_file_path):
+             self._log_event('REWORK_LOG_FILE_CREATED', detail={'path': self.rework_log_file_path})
 
         self.total_tray_count = 0
         self.completed_tray_times = []
@@ -489,12 +490,9 @@ class InspectionProgram:
         self.tray_last_end_time = None
         self.reworked_items_today = []
         
-        log_file_pattern = re.compile(f"검사작업이벤트로그_.*_(\\d{{8}})\\.csv")
-        
-        today_log_path = self.log_file_path
-        if os.path.exists(today_log_path):
+        if os.path.exists(self.rework_log_file_path):
             try:
-                with open(today_log_path, 'r', encoding='utf-8-sig') as f:
+                with open(self.rework_log_file_path, 'r', encoding='utf-8-sig') as f:
                     reader = list(csv.DictReader(f))
                 
                 for row in reader:
@@ -514,9 +512,10 @@ class InspectionProgram:
                             continue
                 self.reworked_items_today.sort(key=lambda x: x.get('rework_time', ''), reverse=True)
             except Exception as e:
-                print(f"금일 로그 파일 '{today_log_path}' 처리 중 오류: {e}")
+                print(f"금일 리워크 로그 파일 '{self.rework_log_file_path}' 처리 중 오류: {e}")
 
         all_completed_sessions = []
+        log_file_pattern = re.compile(r"검사작업이벤트로그_.*_(\d{8})\.csv")
         try:
             all_log_files = [os.path.join(self.save_folder, f) for f in os.listdir(self.save_folder) if log_file_pattern.match(f)]
             for log_path in sorted(all_log_files):
@@ -530,7 +529,7 @@ class InspectionProgram:
                                 all_completed_sessions.append(details)
                             except (json.JSONDecodeError, KeyError, TypeError): continue
         except Exception as e:
-            print(f"전체 로그 파일 처리 중 오류: {e}")
+            print(f"전체 검사 로그 파일 처리 중 오류: {e}")
 
         self.completed_master_labels.clear()
         today_sessions_list = [s for s in all_completed_sessions if s['timestamp'].date() == today]
@@ -558,15 +557,13 @@ class InspectionProgram:
             defective_count_in_session = len(session.get('defective_product_barcodes', []))
             self.work_summary[item_code]['defective_ea_count'] += defective_count_in_session
 
-            is_defective_only_session = session.get('is_defective_only_session', False)
-            if not is_defective_only_session:
-                if session.get('is_test', False):
-                    self.work_summary[item_code]['test_pallet_count'] += 1
-                else:
-                    self.work_summary[item_code]['pallet_count'] += 1
-                
-                if not session.get('is_test', False) and not session.get('is_partial', False):
-                    self.total_tray_count += 1
+            if session.get('is_test', False):
+                self.work_summary[item_code]['test_pallet_count'] += 1
+            else:
+                self.work_summary[item_code]['pallet_count'] += 1
+            
+            if not session.get('is_test', False) and not session.get('is_partial', False):
+                self.total_tray_count += 1
         
         clean_sessions = [s for s in current_week_sessions_list if (
             s.get('scan_count') == s.get('tray_capacity') and not s.get('has_error_or_reset') and 
@@ -578,7 +575,7 @@ class InspectionProgram:
             if valid_times: self.completed_tray_times = valid_times
         if any(self.work_summary):
             self.show_status_message(f"금일 작업 현황을 불러왔습니다.", self.COLOR_PRIMARY)
-            
+
     def _save_current_session_state(self):
         if not self.current_session.master_label_code: return
         state_path = os.path.join(self.save_folder, self.CURRENT_TRAY_STATE_FILE)
@@ -626,19 +623,18 @@ class InspectionProgram:
 
     def _restore_session_from_state(self, state: Dict[str, Any]):
         state.pop('worker_name', None)
+        state.pop('is_defective_only_session', None) 
+        
         state['start_time'] = datetime.datetime.fromisoformat(state['start_time']) if state.get('start_time') else None
         session_fields = InspectionSession.__dataclass_fields__
         for field_name in session_fields:
             if field_name not in state:
                 state[field_name] = session_fields[field_name].default_factory() if callable(session_fields[field_name].default_factory) else session_fields[field_name].default
+        
         self.current_session = InspectionSession(**state)
         self.current_session.is_restored_session = True
         
-        if self.current_session.is_defective_only_session:
-            self.current_mode = "defective_only"
-        else:
-            self.current_mode = "standard"
-
+        self.current_mode = "standard"
         self.show_status_message("이전 검사 작업을 복구했습니다.", self.COLOR_PRIMARY)
 
     def _delete_current_session_state(self):
@@ -766,8 +762,6 @@ class InspectionProgram:
         mode_frame.grid(row=0, column=0, sticky='ne', pady=(5, 10), padx=5)
         self.rework_mode_button = ttk.Button(mode_frame, text="리워크 모드", command=self.toggle_rework_mode, style='Secondary.TButton')
         self.rework_mode_button.pack(side=tk.RIGHT, padx=(5,0))
-        self.defective_mode_button = ttk.Button(mode_frame, text="불량 전용 모드", command=self.toggle_defective_mode, style='Secondary.TButton')
-        self.defective_mode_button.pack(side=tk.RIGHT)
 
         self.current_item_label = ttk.Label(parent_frame, text="", style='ItemInfo.TLabel', justify='center', anchor='center')
         self.current_item_label.grid(row=1, column=0, sticky='ew', pady=(0, 20))
@@ -792,6 +786,11 @@ class InspectionProgram:
         self.good_count_label = ttk.Label(self.counter_frame, text="양품: 0", style='TLabel', foreground=self.COLOR_SUCCESS, font=(self.DEFAULT_FONT, int(14 * self.scale_factor), 'bold'))
         self.main_count_label = ttk.Label(self.counter_frame, text=f"0 / {self.TRAY_SIZE}", style='MainCounter.TLabel', anchor='center')
         self.defect_count_label = ttk.Label(self.counter_frame, text="불량: 0", style='TLabel', foreground=self.COLOR_DEFECT, font=(self.DEFAULT_FONT, int(14 * self.scale_factor), 'bold'))
+        
+        self.good_count_label.pack(side=tk.LEFT, padx=20)
+        self.main_count_label.pack(side=tk.LEFT, padx=20)
+        self.defect_count_label.pack(side=tk.LEFT, padx=20)
+
 
         self.scan_entry_inspection = tk.Entry(self.inspection_view_frame, justify='center', font=(self.DEFAULT_FONT, int(30 * self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_PRIMARY, highlightthickness=3)
         self.scan_entry_inspection.grid(row=2, column=0, sticky='ew', ipady=int(15 * self.scale_factor), padx=30)
@@ -800,7 +799,6 @@ class InspectionProgram:
         self.defect_mode_indicator = ttk.Label(self.inspection_view_frame, text="", font=(self.DEFAULT_FONT, int(12 * self.scale_factor), 'bold'), anchor='center')
         self.defect_mode_indicator.grid(row=3, column=0, sticky='ew', pady=(5, 0), padx=30)
         
-        # **수정된 부분: PanedWindow로 교체**
         self.list_paned_window = ttk.PanedWindow(self.inspection_view_frame, orient=tk.HORIZONTAL)
         self.list_paned_window.grid(row=4, column=0, sticky='nsew', pady=(10, 0), padx=30)
         
@@ -987,29 +985,9 @@ class InspectionProgram:
         value_label.pack()
         return {'frame': card, 'label': label, 'value': value_label}
 
-    def toggle_defective_mode(self):
-        """'일반 모드'와 '불량 전용 모드'를 전환합니다. 세션 진행 중에도 경고 없이 전환됩니다."""
-        if self.current_mode == "standard":
-            self.current_mode = "defective_only"
-            if self.current_session.master_label_code:
-                self.current_session.is_defective_only_session = True
-        elif self.current_mode == "defective_only":
-            self.current_mode = "standard"
-            if self.current_session.master_label_code:
-                self.current_session.is_defective_only_session = False
-        else:
-            return
-
-        self._log_event('MODE_CHANGE', detail={'mode': self.current_mode})
-        self._apply_mode_ui()
-        self._update_center_display()
-        self._update_current_item_label()
-        self._save_current_session_state()
-
     def toggle_rework_mode(self):
-        """'리워크 모드'를 켜고 끕니다. 세션 진행 중에도 경고 없이 전환됩니다."""
+        """'리워크 모드'를 켜고 끕니다."""
         if self.current_mode != "rework":
-            self.last_inspection_mode = self.current_mode
             self.current_mode = "rework"
             today = datetime.date.today()
             one_week_ago = today - datetime.timedelta(days=7)
@@ -1017,7 +995,7 @@ class InspectionProgram:
             self.rework_end_date_var.set(today.strftime('%Y-%m-%d'))
             self._load_reworkable_defects(one_week_ago, today)
         else:
-            self.current_mode = self.last_inspection_mode
+            self.current_mode = "standard"
             self.reworkable_defects.clear()
             self._populate_rework_trees()
 
@@ -1028,22 +1006,11 @@ class InspectionProgram:
     def _apply_mode_ui(self):
         """현재 모드에 맞게 UI를 엄격하게 분리하여 표시합니다."""
         self.apply_scaling()
-        if not hasattr(self, 'defective_mode_button'): return
+        if not hasattr(self, 'rework_mode_button'): return
 
         is_rework = self.current_mode == 'rework'
-        is_defective = self.current_mode == 'defective_only'
-        is_standard = self.current_mode == 'standard'
 
         self.rework_mode_button.config(text="검사 모드로" if is_rework else "리워크 모드")
-        self.defective_mode_button.config(text="일반 모드로" if is_defective else "불량 전용 모드")
-
-        if is_rework:
-            self.defective_mode_button.pack_forget()
-        else:
-            self.rework_mode_button.pack_forget()
-            self.defective_mode_button.pack_forget()
-            self.rework_mode_button.pack(side=tk.RIGHT, padx=(5,0))
-            self.defective_mode_button.pack(side=tk.RIGHT)
         
         if is_rework:
             self.rework_view_frame.tkraise()
@@ -1054,31 +1021,6 @@ class InspectionProgram:
             self.inspection_view_frame.tkraise()
             self.rework_filter_frame.grid_remove()
             self.scan_entry = self.scan_entry_inspection
-
-        for w in [self.good_count_label, self.main_count_label, self.defect_count_label]:
-            w.pack_forget()
-
-        is_defective_session = self.current_session.master_label_code and self.current_session.is_defective_only_session
-        
-        # **수정된 부분: PanedWindow를 이용한 레이아웃 제어**
-        if is_standard and not is_defective_session:
-            self.main_progress_bar.grid()
-            self.good_count_label.pack(side=tk.LEFT, padx=20)
-            self.main_count_label.pack(side=tk.LEFT, padx=20)
-            self.defect_count_label.pack(side=tk.LEFT, padx=20)
-            
-            # good_frame이 숨겨져 있다면 다시 보이도록 추가
-            if self.good_frame not in self.list_paned_window.panes():
-                self.list_paned_window.insert(0, self.good_frame)
-
-
-        elif is_defective or is_defective_session:
-            self.main_progress_bar.grid_remove()
-            self.defect_count_label.pack()
-            
-            # good_frame이 보이고 있다면 숨김
-            if self.good_frame in self.list_paned_window.panes():
-                self.list_paned_window.forget(self.good_frame)
             
         self.on_pedal_release_ui_feedback()
         self._update_current_item_label()
@@ -1122,19 +1064,11 @@ class InspectionProgram:
             color = self.COLOR_REWORK
         elif self.current_session.master_label_code:
             name_part = f"현재 품목: {self.current_session.item_name} ({self.current_session.item_code})"
-            if self.current_session.is_defective_only_session:
-                instruction = "\n\n⚠️ 불량 전용 모드: 불량품을 스캔하세요."
-                text, color = f"{name_part}{instruction}", self.COLOR_DEFECT
-            else:
-                instruction = f"\n양품 {self.current_session.quantity}개를 목표로 스캔하세요. (불량: {self.DEFECT_PEDAL_KEY_NAME} 페달)"
-                text = f"{name_part}{instruction}"
+            instruction = f"\n양품 {self.current_session.quantity}개를 목표로 스캔하세요. (불량: {self.DEFECT_PEDAL_KEY_NAME} 페달)"
+            text = f"{name_part}{instruction}"
         else: 
-            if self.current_mode == "defective_only":
-                text = "현품표 라벨을 스캔하여 불량품 등록을 시작하세요.\n\n⚠️ 불량 전용 모드"
-                color = self.COLOR_DEFECT
-            else:
-                text = "현품표 라벨을 스캔하여 검사를 시작하세요."
-                color = self.COLOR_TEXT_SUBTLE
+            text = "현품표 라벨을 스캔하여 검사를 시작하세요."
+            color = self.COLOR_TEXT_SUBTLE
         
         self.current_item_label['text'], self.current_item_label['foreground'] = text, color
 
@@ -1146,8 +1080,191 @@ class InspectionProgram:
             return None
         except ValueError: return None
 
+    def _start_automated_test_thread(self, item_code: str, num_good: int, num_defect: int, num_pallets: int):
+        """선택된 품목 코드와 수량으로 자동화 테스트 스레드를 시작합니다."""
+        if not item_code:
+            messagebox.showwarning("품목 선택 오류", "테스트를 시작할 품목이 선택되지 않았습니다.")
+            return
+        threading.Thread(
+            target=self._automated_test_sequence, 
+            args=(item_code, num_good, num_defect, num_pallets), 
+            daemon=True
+        ).start()
+
+    def _prompt_for_test_item(self):
+        """자동 테스트 시작 시 품목과 수량을 선택할 수 있는 팝업창을 띄웁니다."""
+        if not self.items_data:
+            messagebox.showerror("오류", "Item.csv에 데이터가 없어 테스트를 진행할 수 없습니다.")
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.title("자동 테스트 설정")
+        popup.geometry("500x320")
+        popup.transient(self.root)
+        popup.grab_set()
+        
+        main_frame = ttk.Frame(popup, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="1. 테스트할 품목을 선택하세요.").pack(pady=(0, 5), anchor='w')
+        item_display_list = [f"{item.get('Item Name', '이름없음')} ({item.get('Item Code', '코드없음')})" for item in self.items_data]
+        item_combobox = ttk.Combobox(main_frame, values=item_display_list, state="readonly", font=(self.DEFAULT_FONT, 12))
+        item_combobox.pack(fill=tk.X, pady=(0, 15))
+        if item_display_list:
+            item_combobox.set(item_display_list[0])
+
+        ttk.Label(main_frame, text="2. 테스트 수량을 설정하세요.").pack(pady=(0, 5), anchor='w')
+        settings_frame = ttk.Frame(main_frame)
+        settings_frame.pack(fill=tk.X)
+        settings_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(settings_frame, text="양품 수량 (개/파렛트):").grid(row=0, column=0, sticky='w', padx=5, pady=2)
+        good_var = tk.StringVar(value="5")
+        ttk.Spinbox(settings_frame, from_=1, to=100, textvariable=good_var, width=10).grid(row=0, column=2, sticky='e', padx=5, pady=2)
+        
+        ttk.Label(settings_frame, text="불량 수량 (개/파렛트):").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        defect_var = tk.StringVar(value="2")
+        ttk.Spinbox(settings_frame, from_=0, to=100, textvariable=defect_var, width=10).grid(row=1, column=2, sticky='e', padx=5, pady=2)
+        
+        ttk.Label(settings_frame, text="테스트 파렛트 수:").grid(row=2, column=0, sticky='w', padx=5, pady=2)
+        pallet_var = tk.StringVar(value="1")
+        ttk.Spinbox(settings_frame, from_=1, to=10, textvariable=pallet_var, width=10).grid(row=2, column=2, sticky='e', padx=5, pady=2)
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(pady=20)
+
+        def get_settings():
+            try:
+                num_good = int(good_var.get())
+                num_defect = int(defect_var.get())
+                num_pallets = int(pallet_var.get())
+                if num_good <= 0 or num_defect < 0 or num_pallets <= 0:
+                    raise ValueError("수량은 0보다 커야 합니다 (불량 제외).")
+                return num_good, num_defect, num_pallets
+            except (ValueError, TypeError) as e:
+                messagebox.showerror("입력 오류", f"수량 설정이 올바르지 않습니다.\n{e}", parent=popup)
+                return None, None, None
+
+        def start_with_selection():
+            num_good, num_defect, num_pallets = get_settings()
+            if num_good is None: return
+
+            selected_str = item_combobox.get()
+            if not selected_str:
+                messagebox.showwarning("선택 오류", "콤보박스에서 품목을 선택해주세요.", parent=popup)
+                return
+            try:
+                item_code = re.search(r'\((\S+)\)$', selected_str).group(1)
+                popup.destroy()
+                self._start_automated_test_thread(item_code, num_good, num_defect, num_pallets)
+            except (AttributeError, IndexError):
+                messagebox.showerror("오류", "선택된 품목에서 품목 코드를 추출할 수 없습니다.", parent=popup)
+
+        def start_with_random():
+            num_good, num_defect, num_pallets = get_settings()
+            if num_good is None: return
+
+            random_item = random.choice(self.items_data)
+            item_code = random_item.get('Item Code')
+            popup.destroy()
+            self._start_automated_test_thread(item_code, num_good, num_defect, num_pallets)
+
+        ttk.Button(button_frame, text="선택한 품목으로 시작", command=start_with_selection).pack(side=tk.LEFT, padx=10)
+        ttk.Button(button_frame, text="무작위 품목으로 시작", command=start_with_random).pack(side=tk.LEFT, padx=10)
+        ttk.Button(button_frame, text="취소", command=popup.destroy).pack(side=tk.LEFT, padx=10)
+
+    def _automated_test_sequence(self, test_item_code: str, num_good: int, num_defect: int, num_pallets: int):
+        """선택된 품목 코드와 수량으로 자동화 테스트의 전체 시나리오를 실행합니다."""
+        try:
+            TEST_WORKER = "AutoTester"
+            REWORK_COUNT = 5
+            DELAY = 1.8 
+
+            self.root.after(0, lambda: messagebox.showinfo("테스트 시작", f"자동화된 테스트를 시작합니다.\n\n품목: {test_item_code}\n작업자: {TEST_WORKER}\n설정: 양품 {num_good}, 불량 {num_defect}개씩 {num_pallets} 파렛트"))
+            time.sleep(DELAY)
+
+            if self.worker_name:
+                self.root.after(0, self.change_worker)
+                time.sleep(DELAY)
+
+            self.root.after(0, lambda: self._create_test_defect_logs(test_item_code, REWORK_COUNT))
+            self.root.after(0, lambda: self.show_status_message(f"{REWORK_COUNT}개의 테스트 불량 데이터 생성 완료", self.COLOR_PRIMARY))
+            time.sleep(DELAY)
+
+            self.root.after(0, lambda: self.worker_entry.insert(0, TEST_WORKER))
+            time.sleep(0.5)
+            self.root.after(0, self.start_work)
+            self.root.after(0, lambda: self.show_status_message("로그인 자동 실행", self.COLOR_PRIMARY))
+            time.sleep(DELAY)
+
+            for pallet_num in range(num_pallets):
+                self.root.after(0, lambda p=pallet_num+1: self.show_status_message(f"파렛트 {p}/{num_pallets} 검사 시작", self.COLOR_PRIMARY))
+                time.sleep(DELAY)
+
+                master_label = self._generate_test_master_label(test_item_code, quantity=num_good)
+                self.root.after(0, lambda ml=master_label: self._process_scan_logic(ml))
+                self.root.after(0, lambda: self.show_status_message("현품표 스캔", self.COLOR_PRIMARY))
+                time.sleep(DELAY)
+
+                for i in range(num_good):
+                    barcode = f"TEST-GOOD-P{pallet_num}-{test_item_code}-{datetime.datetime.now().strftime('%f')}-{i}"
+                    self.root.after(0, lambda b=barcode: self._process_scan_logic(b))
+                    self.root.after(0, lambda n=i+1: self.show_status_message(f"양품 스캔 ({n}/{num_good})", self.COLOR_SUCCESS))
+                    time.sleep(DELAY)
+
+                for i in range(num_defect):
+                    self.is_auto_testing_defect = True
+                    barcode = f"TEST-DEFECT-P{pallet_num}-{test_item_code}-{datetime.datetime.now().strftime('%f')}-{i}"
+                    self.root.after(0, lambda b=barcode: self._process_scan_logic(b))
+                    self.root.after(0, lambda n=i+1: self.show_status_message(f"불량 스캔 ({n}/{num_defect})", self.COLOR_DEFECT))
+                    time.sleep(DELAY)
+                self.is_auto_testing_defect = False
+
+                self.root.after(0, lambda p=pallet_num+1: self.show_status_message(f"파렛트 {p} 자동 완료 처리", self.COLOR_PRIMARY))
+                time.sleep(DELAY)
+
+            self.root.after(0, self.toggle_rework_mode)
+            self.root.after(0, lambda: self.show_status_message("리워크 모드로 전환", self.COLOR_REWORK))
+            time.sleep(DELAY)
+
+            if self.reworkable_defects:
+                rework_barcode = list(self.reworkable_defects.keys())[0]
+                self.root.after(0, lambda: self._process_scan_logic(rework_barcode))
+                self.root.after(0, lambda: self.show_status_message(f"리워크 스캔: {rework_barcode}", self.COLOR_REWORK))
+                time.sleep(DELAY)
+            
+            self.root.after(0, self.toggle_rework_mode)
+            self.root.after(0, lambda: self.show_status_message("일반 모드로 복귀", self.COLOR_PRIMARY))
+            time.sleep(DELAY)
+
+            self.root.after(0, lambda: messagebox.showinfo("테스트 완료", "자동화된 테스트가 성공적으로 완료되었습니다."))
+
+        except Exception as e:
+            self.is_auto_testing_defect = False
+            self.root.after(0, lambda: messagebox.showerror("테스트 오류", f"자동 테스트 중 오류가 발생했습니다:\n{e}"))
+
+    def _create_test_defect_logs(self, item_code: str, count: int):
+        """리워크 테스트를 위한 불량 데이터를 로그 파일에 직접 생성합니다."""
+        if not self.worker_name:
+            self.root.after(0, lambda: messagebox.showwarning("오류", "먼저 작업자로 로그인해주세요."))
+            return
+            
+        self.root.after(0, lambda: self.show_status_message(f"'{item_code}' 불량 데이터 {count}개 생성 중...", self.COLOR_DEFECT))
+        
+        for i in range(count):
+            timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')
+            test_barcode = f"TEST-DEFECT-{item_code}-{timestamp}-{i+1:04d}"
+            self._log_event('INSPECTION_DEFECTIVE', detail={'barcode': test_barcode})
+            time.sleep(0.01)
+
+        self.root.after(0, lambda: self.show_status_message(f"테스트용 불량 데이터 {count}개 생성 완료.", self.COLOR_SUCCESS))
+
+    def _generate_test_master_label(self, item_code: str, quantity: int = 10) -> str:
+        """테스트용 현품표 QR 문자열을 생성합니다."""
+        now = datetime.datetime.now()
+        return f"WID=TEST-WID-{now.strftime('%H%M%S')}|CLC={item_code}|QT={quantity}|FPB=TEST-FPB|OBD={now.strftime('%Y%m%d')}|PHS={now.hour}|SPC=TEST-SPC|IG=TEST-IG"
+
     def _generate_rework_test_logs(self, count: int):
-        """'불량 발생 -> 리워크 성공'을 시뮬레이션하는 테스트 로그 세트를 생성합니다."""
         self.show_status_message(f"리워크 테스트 로그 {count}개 생성 중...", self.COLOR_REWORK)
         self.root.update_idletasks()
 
@@ -1180,7 +1297,6 @@ class InspectionProgram:
         self._update_summary_title()
 
     def _generate_test_logs(self, count: int):
-        """(일반/불량 모드) 지정된 수량만큼 식별 가능한 테스트 로그를 생성합니다."""
         if not self.current_session.master_label_code:
             if not self.items_data:
                 self.show_fullscreen_warning("오류", "품목 데이터(Item.csv)가 없습니다.", self.COLOR_DEFECT)
@@ -1196,17 +1312,13 @@ class InspectionProgram:
             self.current_session.master_label_code = f"TEST-MASTER-{self.current_session.item_code}-{timestamp}"
             self._log_event('RANDOM_TEST_SESSION_START', detail={'item_code': self.current_session.item_code, 'item_name': self.current_session.item_name})
             
-            if self.current_mode == 'defective_only':
-                self.current_session.is_defective_only_session = True
-
             self._update_current_item_label()
             self._update_center_display()
             self.root.update_idletasks()
             
-            status_to_record = 'Defective' if self.current_mode == 'defective_only' else 'Good'
             for i in range(count):
                 test_barcode = f"TEST-{self.current_session.item_code}-{timestamp}-{i+1:03d}"
-                self.record_inspection_result(test_barcode, status_to_record)
+                self.record_inspection_result(test_barcode, 'Good')
             return
 
         original_session_info = self.current_session.__dict__.copy()
@@ -1231,13 +1343,9 @@ class InspectionProgram:
             items_for_this_pallet = min(items_to_generate, tray_capacity)
             self.current_session.quantity = items_for_this_pallet
 
-            status_to_record = 'Defective' if self.current_mode == 'defective_only' else 'Good'
             for i in range(items_for_this_pallet):
                 barcode = f"TEST-{self.current_session.item_code}-{timestamp}-{i:03d}"
-                if status_to_record == 'Good':
-                    self.current_session.good_items.append({'barcode': barcode, 'timestamp': datetime.datetime.now().isoformat(), 'status': 'Good'})
-                else:
-                    self.current_session.defective_items.append({'barcode': barcode, 'timestamp': datetime.datetime.now().isoformat(), 'status': 'Defective'})
+                self.current_session.good_items.append({'barcode': barcode, 'timestamp': datetime.datetime.now().isoformat(), 'status': 'Good'})
                 self.current_session.scanned_barcodes.append(barcode)
             
             self.complete_session()
@@ -1249,47 +1357,48 @@ class InspectionProgram:
         self.show_status_message(f"테스트 로그 {count}개 생성을 완료했습니다.", self.COLOR_SUCCESS)
 
     def process_scan(self, event=None):
+        """UI의 스캔 엔트리에서 바코드를 읽어 로직을 실행합니다."""
+        raw_barcode = self.scan_entry.get().strip()
+        self.scan_entry.delete(0, tk.END)
+        self._process_scan_logic(raw_barcode)
+
+    def _process_scan_logic(self, raw_barcode: str):
+        """바코드 데이터를 받아 실제 처리 로직을 수행합니다."""
         current_time = time.monotonic()
         if current_time - self.last_scan_time < self.scan_delay_sec.get():
-            self.scan_entry.delete(0, tk.END)
             return
         self.last_scan_time = current_time
         
-        # 원본 스캔 데이터. Base64일 수 있음.
-        raw_barcode = self.scan_entry.get().strip()
-        self.scan_entry.delete(0, tk.END)
         if not raw_barcode: return
 
-        # Base64 디코딩 시도.
-        # 'barcode' 변수는 이후 로직에서 사용할 처리된(디코딩된) 데이터입니다.
+        if raw_barcode.upper().startswith("_CREATE_DEFECTS_"):
+            try:
+                parts = raw_barcode.split('_')
+                item_code = parts[2]
+                count = int(parts[3])
+                threading.Thread(target=self._create_test_defect_logs, args=(item_code, count), daemon=True).start()
+            except Exception as e:
+                messagebox.showerror("오류", f"불량 데이터 생성 코드 형식 오류입니다.\n형식: _CREATE_DEFECTS_[품목코드]_[수량]_\n오류: {e}")
+            return
+        
+        if raw_barcode.upper() == "_RUN_AUTO_TEST_":
+            self.root.after(0, self._prompt_for_test_item)
+            return
+
         barcode = raw_barcode
         try:
-            # 현품표 QR은 Base64로 인코딩될 수 있습니다. '|' 구분자가 없는 긴 문자열이면 디코딩을 시도합니다.
-            # 일반 제품 바코드는 이 조건에 해당하지 않으므로 불필요한 디코딩 시도를 줄입니다.
             if '|' not in raw_barcode and len(raw_barcode) > 20:
-                # 웹 안전 Base64 인코딩(-, _ 사용)과 표준 인코딩(+, / 사용)을 모두 처리합니다.
                 temp_barcode = raw_barcode.replace('-', '+').replace('_', '/')
-                # 패딩이 없는 경우를 대비해 자동으로 추가합니다.
                 padded_barcode = temp_barcode + '=' * (-len(temp_barcode) % 4)
-                
                 decoded_bytes = base64.b64decode(padded_barcode)
                 decoded_string = decoded_bytes.decode('utf-8')
-                
-                # 디코딩된 결과가 유효한 현품표 형식인지 추가로 확인합니다.
                 if '|' in decoded_string and '=' in decoded_string:
-                    barcode = decoded_string  # 디코딩 성공, 이 값을 사용합니다.
+                    barcode = decoded_string
                     self._log_event('QR_BASE64_DECODED', detail={'original': raw_barcode, 'decoded': barcode})
-                # else: 디코딩은 됐지만 우리 형식이 아니면 원본을 그대로 사용합니다 (예: 그냥 긴 제품 바코드).
-                
         except (binascii.Error, UnicodeDecodeError):
-            # Base64 형식이 아니거나, UTF-8로 디코딩할 수 없는 경우입니다.
-            # 일반 제품 바코드를 스캔했을 때 정상적으로 발생하는 예외이므로, 원본 값을 그대로 사용합니다.
             pass
 
         self._update_last_activity_time()
-        
-        # 이제부터 'barcode' 변수는 항상 디코딩된(또는 원래부터 디코딩이 필요 없던) 값을 가집니다.
-        # 나머지 기존 로직은 이 'barcode' 변수를 사용하여 그대로 작동합니다.
         
         if barcode.upper().startswith("TEST_LOG_"):
             try:
@@ -1322,7 +1431,6 @@ class InspectionProgram:
             self.show_status_message(f"'{self.current_session.item_name}' 작업을 자동 제출하고 새 작업을 시작합니다.", self.COLOR_PRIMARY)
             self.root.update_idletasks()
             time.sleep(1)
-            
             self.current_session.is_partial_submission = True
             self.complete_session()
         
@@ -1331,8 +1439,6 @@ class InspectionProgram:
                 self.show_fullscreen_warning("작업 시작 오류", "먼저 현품표 라벨을 스캔하여 작업을 시작해주세요.", self.COLOR_DEFECT)
                 return
             
-            # 신형 QR 현품표(고유 식별자)는 중복을 허용하지 않습니다.
-            # 구형 현품표(단순 품번)는 다른 팔레트에 대해 중복될 수 있으므로 중복 검사를 하지 않습니다.
             if parsed_data and barcode in self.completed_master_labels:
                 self.show_fullscreen_warning("작업 중복", f"이미 완료된 현품표입니다.\n\n{barcode}", self.COLOR_DEFECT)
                 self._log_event('SCAN_FAIL_DUPLICATE_MASTER', detail={'barcode': barcode})
@@ -1345,7 +1451,7 @@ class InspectionProgram:
                     self.show_fullscreen_warning("품목 없음", f"새 현품표의 품목코드 '{item_code_from_qr}'에 해당하는 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
                     return
                 self.current_session.phs = parsed_data.get('PHS', '')
-                self.current_session.master_label_code = barcode # Store decoded string
+                self.current_session.master_label_code = barcode
                 self.current_session.item_code = item_code_from_qr
                 self.current_session.item_name = matched_item.get('Item Name', '')
                 self.current_session.item_spec = matched_item.get('Spec', '')
@@ -1368,11 +1474,6 @@ class InspectionProgram:
                 self.current_session.quantity = self.TRAY_SIZE
                 self._log_event('MASTER_LABEL_SCANNED', detail={'code': barcode, 'format': 'legacy'})
             
-            if self.current_mode == 'defective_only':
-                self.current_session.is_defective_only_session = True
-            else:
-                self.current_session.is_defective_only_session = False
-                
             self._apply_mode_ui()
             self._update_center_display()
             self._update_current_item_label()
@@ -1381,7 +1482,8 @@ class InspectionProgram:
             return
 
         if self.current_session.master_label_code:
-            is_defect_scan = keyboard.is_pressed(self.DEFECT_PEDAL_KEY_NAME.lower())
+            is_auto_testing_defect = getattr(self, 'is_auto_testing_defect', False)
+            is_defect_scan = keyboard.is_pressed(self.DEFECT_PEDAL_KEY_NAME.lower()) or is_auto_testing_defect
             
             if len(barcode) <= self.ITEM_CODE_LENGTH:
                 self.show_fullscreen_warning("바코드 형식 오류", f"제품 바코드는 {self.ITEM_CODE_LENGTH}자리보다 길어야 합니다.", self.COLOR_DEFECT)
@@ -1398,8 +1500,8 @@ class InspectionProgram:
                 self.show_fullscreen_warning("바코드 중복!", f"제품 바코드 '{barcode}'는 이미 검사되었습니다.", self.COLOR_DEFECT)
                 self._log_event('SCAN_FAIL_DUPLICATE', detail={'barcode': barcode})
                 return
-
-            status = 'Defective' if self.current_session.is_defective_only_session or is_defect_scan else 'Good'
+            
+            status = 'Defective' if is_defect_scan else 'Good'
             self.record_inspection_result(barcode, status)
 
     def record_inspection_result(self, barcode: str, status: str):
@@ -1422,9 +1524,8 @@ class InspectionProgram:
         self.undo_button['state'] = tk.NORMAL
         self._save_current_session_state()
         
-        if not self.current_session.is_defective_only_session:
-            if len(self.current_session.good_items) >= self.current_session.quantity:
-                self.complete_session()
+        if len(self.current_session.good_items) >= self.current_session.quantity:
+            self.complete_session()
 
     def on_load_rework_data_click(self):
         start_date_str = self.rework_start_date_var.get()
@@ -1442,9 +1543,7 @@ class InspectionProgram:
             return
 
         if self.current_mode != 'rework':
-            self.current_mode = 'rework'
-            self._log_event('MODE_CHANGE', detail={'mode': self.current_mode})
-            self._apply_mode_ui()
+            self.toggle_rework_mode()
 
         self._load_reworkable_defects(start_date, end_date)
         self._update_current_item_label()
@@ -1487,51 +1586,60 @@ class InspectionProgram:
         self.root.update_idletasks()
 
         log_file_pattern = re.compile(r"검사작업이벤트로그_.*_(\d{8})\.csv")
-        
+        rework_log_file_pattern = re.compile(r"리워크작업이벤트로그_.*_(\d{8})\.csv")
+
         try:
             all_log_files = [os.path.join(self.save_folder, f) for f in os.listdir(self.save_folder) if log_file_pattern.match(f)]
+            for log_path in all_log_files:
+                try:
+                    match = log_file_pattern.search(os.path.basename(log_path))
+                    if not match: continue
+                    
+                    file_date = datetime.datetime.strptime(match.group(1), '%Y%m%d').date()
+                    if not (start_date <= file_date <= end_date): continue
+                    
+                    with open(log_path, 'r', encoding='utf-8-sig') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            if row.get('event') == 'INSPECTION_DEFECTIVE':
+                                details_str = row.get('details')
+                                if not details_str: continue
+                                try:
+                                    details = json.loads(details_str)
+                                    barcode = details.get('barcode')
+                                    if barcode:
+                                        defects[barcode] = {
+                                            'timestamp': row.get('timestamp'),
+                                            'worker': row.get('worker')
+                                        }
+                                except json.JSONDecodeError: continue
+                except Exception as e:
+                    print(f"불량 목록 로드 중 '{log_path}' 파일 처리 오류: {e}")
+
+            all_rework_files = [os.path.join(self.save_folder, f) for f in os.listdir(self.save_folder) if rework_log_file_pattern.match(f)]
+            for log_path in all_rework_files:
+                try:
+                    with open(log_path, 'r', encoding='utf-8-sig') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            if row.get('event') == 'REWORK_SUCCESS':
+                                details_str = row.get('details')
+                                if not details_str: continue
+                                try:
+                                    details = json.loads(details_str)
+                                    barcode = details.get('barcode')
+                                    if barcode: reworked.add(barcode)
+                                except json.JSONDecodeError: continue
+                except Exception as e:
+                     print(f"리워크 목록 로드 중 '{log_path}' 파일 처리 오류: {e}")
+
         except FileNotFoundError:
-            all_log_files = []
             print("로그 폴더를 찾을 수 없습니다.")
 
-        for log_path in all_log_files:
-            try:
-                match = log_file_pattern.search(os.path.basename(log_path))
-                if not match: continue
-                    
-                file_date_str = match.group(1)
-                file_date = datetime.datetime.strptime(file_date_str, '%Y%m%d').date()
-                
-                if not (start_date <= file_date <= end_date):
-                    continue
-                
-                with open(log_path, 'r', encoding='utf-8-sig') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        event = row.get('event')
-                        details_str = row.get('details')
-                        if not details_str: continue
-                        
-                        try:
-                            details = json.loads(details_str)
-                            barcode = details.get('barcode')
-                            if not barcode: continue
-
-                            if event == 'INSPECTION_DEFECTIVE':
-                                defects[barcode] = {
-                                    'timestamp': row.get('timestamp'),
-                                    'worker': row.get('worker')
-                                }
-                            elif event == 'REWORK_SUCCESS':
-                                reworked.add(barcode)
-                        except json.JSONDecodeError:
-                            continue
-            except Exception as e:
-                print(f"리워크 목록 로드 중 '{log_path}' 파일 처리 오류: {e}")
-
         self.reworkable_defects = {barcode: info for barcode, info in defects.items() if barcode not in reworked}
+        
         self._populate_rework_trees()
-        self._log_event("REWORK_LIST_LOADED", detail={'count': len(self.reworkable_defects), 'start_date': start_date.strftime('%Y-%m-%d'), 'end_date': end_date.strftime('%Y-%m-%d')})
+        self._log_event("REWORK_LIST_LOADED", detail={'count': len(self.reworkable_defects), 'start_date': start_date_str, 'end_date': end_date_str})
         self.show_status_message(f"리워크 가능 불량품 {len(self.reworkable_defects)}개를 불러왔습니다.", self.COLOR_REWORK)
         
     def _redraw_scan_trees(self):
@@ -1551,7 +1659,6 @@ class InspectionProgram:
         has_error = self.current_session.has_error_or_reset
         is_partial = self.current_session.is_partial_submission
         is_restored = self.current_session.is_restored_session
-        is_defective_only = self.current_session.is_defective_only_session
 
         log_detail = {
             'master_label_code': self.current_session.master_label_code,
@@ -1568,41 +1675,35 @@ class InspectionProgram:
             'has_error_or_reset': has_error,
             'is_partial_submission': is_partial,
             'is_restored_session': is_restored,
-            'is_defective_only_session': is_defective_only,
             'start_time': self.current_session.start_time.isoformat() if self.current_session.start_time else None,
             'end_time': datetime.datetime.now().isoformat(),
             'is_test': is_test
         }
         self._log_event('TRAY_COMPLETE', detail=log_detail)
         
-        # 신형 QR 현품표만 완료 목록에 추가 (고유 식별자)
         if not is_test and self._parse_new_format_qr(self.current_session.master_label_code):
             self.completed_master_labels.add(self.current_session.master_label_code)
 
         item_code = self.current_session.item_code
         if item_code not in self.work_summary:
             self.work_summary[item_code] = {'name': self.current_session.item_name, 'spec': self.current_session.item_spec, 
-                                           'pallet_count': 0, 'test_pallet_count': 0, 'defective_ea_count': 0}
+                                            'pallet_count': 0, 'test_pallet_count': 0, 'defective_ea_count': 0}
 
         defective_count_in_session = len(self.current_session.defective_items)
         self.work_summary[item_code]['defective_ea_count'] += defective_count_in_session
+        self.work_summary[item_code]['name'] = self.current_session.item_name
+        self.work_summary[item_code]['spec'] = self.current_session.item_spec
 
-        if is_defective_only:
-            self.show_status_message(f"불량 전용 '{self.current_session.item_name}' {defective_count_in_session}개 제출 완료!", self.COLOR_DEFECT)
+        if is_test:
+            self.work_summary[item_code]['test_pallet_count'] += 1
+            self.show_status_message(f"테스트 세션('{self.current_session.item_name}')이 완료되었습니다.", self.COLOR_SUCCESS)
         else:
-            self.work_summary[item_code]['name'] = self.current_session.item_name
-            self.work_summary[item_code]['spec'] = self.current_session.item_spec
-
-            if is_test:
-                self.work_summary[item_code]['test_pallet_count'] += 1
-                self.show_status_message(f"테스트 세션('{self.current_session.item_name}')이 완료되었습니다.", self.COLOR_SUCCESS)
-            else:
-                self.work_summary[item_code]['pallet_count'] += 1
-                if not is_partial: self.total_tray_count += 1
-                if not has_error and not is_partial and not is_restored and self.current_session.stopwatch_seconds > 0:
-                    self.completed_tray_times.append(self.current_session.stopwatch_seconds)
-                if is_partial: self.show_status_message(f"'{self.current_session.item_name}' 부분 제출 완료!", self.COLOR_PRIMARY)
-                else: self.show_status_message(f"'{self.current_session.item_name}' 1 파렛트 검사 완료!", self.COLOR_SUCCESS)
+            self.work_summary[item_code]['pallet_count'] += 1
+            if not is_partial: self.total_tray_count += 1
+            if not has_error and not is_partial and not is_restored and self.current_session.stopwatch_seconds > 0:
+                self.completed_tray_times.append(self.current_session.stopwatch_seconds)
+            if is_partial: self.show_status_message(f"'{self.current_session.item_name}' 부분 제출 완료!", self.COLOR_PRIMARY)
+            else: self.show_status_message(f"'{self.current_session.item_name}' 1 파렛트 검사 완료!", self.COLOR_SUCCESS)
 
         self.current_session = InspectionSession()
         self._redraw_scan_trees()
@@ -1725,22 +1826,22 @@ class InspectionProgram:
     def _update_center_display(self):
         if not (hasattr(self, 'main_count_label') and self.main_count_label.winfo_exists()): return
         
-        good_count = len(self.current_session.good_items)
-        defect_count = len(self.current_session.defective_items)
-        
-        self.good_count_label['text'] = f"양품: {good_count}"
-        self.defect_count_label['text'] = f"불량: {defect_count}"
+        if self.current_session.master_label_code:
+            good_count = len(self.current_session.good_items)
+            defect_count = len(self.current_session.defective_items)
+            total_quantity_in_tray = self.current_session.quantity
 
-        is_defective_session = self.current_session.master_label_code and self.current_session.is_defective_only_session
-        
-        if is_defective_session:
-            self.main_count_label.config(text=f"불량 등록 중: {defect_count}개")
-            self.main_progress_bar.config(value=0)
-        else:
-            total_quantity_in_tray = self.current_session.quantity if self.current_session.master_label_code else self.TRAY_SIZE
+            self.good_count_label['text'] = f"양품: {good_count}"
+            self.defect_count_label['text'] = f"불량: {defect_count}"
             self.main_count_label.config(text=f"{good_count} / {total_quantity_in_tray}")
             self.main_progress_bar['maximum'] = total_quantity_in_tray
             self.main_progress_bar.config(value=good_count)
+        else:
+            self.good_count_label['text'] = "양품: -"
+            self.defect_count_label['text'] = "불량: -"
+            self.main_count_label.config(text="- / -")
+            self.main_progress_bar.config(value=0)
+            self.main_progress_bar['maximum'] = self.TRAY_SIZE
 
     def _update_clock(self):
         if not self.root.winfo_exists(): return
@@ -1882,7 +1983,7 @@ class InspectionProgram:
                 except tk.TclError: pass
             self.save_settings()
             self._cancel_all_jobs()
-            self.log_queue.put(None)
+            self.log_queue.put((None, None))
             if self.log_thread.is_alive(): self.log_thread.join(timeout=1.0)
             pygame.quit()
             self.root.destroy()
@@ -1890,31 +1991,45 @@ class InspectionProgram:
     def _event_log_writer(self):
         while True:
             try:
-                log_entry = self.log_queue.get(timeout=1.0)
+                log_type, log_entry = self.log_queue.get(timeout=1.0)
                 if log_entry is None: break
-                if not self.log_file_path:
+
+                target_path = self.rework_log_file_path if log_type == 'rework' else self.log_file_path
+
+                if not target_path:
                     time.sleep(0.1)
-                    self.log_queue.put(log_entry)
+                    self.log_queue.put((log_type, log_entry))
                     continue
-                file_exists = os.path.exists(self.log_file_path) and os.stat(self.log_file_path).st_size > 0
-                with open(self.log_file_path, 'a', newline='', encoding='utf-8-sig') as f:
+
+                file_exists = os.path.exists(target_path) and os.stat(target_path).st_size > 0
+                with open(target_path, 'a', newline='', encoding='utf-8-sig') as f:
                     headers = ['timestamp', 'worker', 'event', 'details']
                     writer = csv.DictWriter(f, fieldnames=headers)
-                    if not file_exists: writer.writeheader()
+                    if not file_exists:
+                        writer.writeheader()
+                    
                     log_entry_for_csv = log_entry.copy()
                     log_entry_for_csv['worker'] = log_entry_for_csv.pop('worker_name')
                     writer.writerow(log_entry_for_csv)
+
             except queue.Empty: continue
             except Exception as e: print(f"로그 파일 쓰기 오류: {e}")
 
     def _log_event(self, event_type: str, detail: Optional[Dict] = None):
-        if not self.worker_name and event_type not in ['UPDATE_CHECK_FOUND', 'UPDATE_STARTED', 'UPDATE_FAILED', 'ITEM_DATA_LOADED']: return
+        if not self.worker_name and event_type not in ['UPDATE_CHECK_FOUND', 'UPDATE_STARTED', 'UPDATE_FAILED', 'ITEM_DATA_LOADED']:
+            return
+            
         worker = self.worker_name if self.worker_name else "System"
+        
         log_entry = {
-            'timestamp': datetime.datetime.now().isoformat(), 'worker_name': worker, 'event': event_type,
+            'timestamp': datetime.datetime.now().isoformat(),
+            'worker_name': worker,
+            'event': event_type,
             'details': json.dumps(detail, ensure_ascii=False) if detail else ''
         }
-        self.log_queue.put(log_entry)
+        
+        log_type = 'rework' if event_type.startswith('REWORK_') else 'main'
+        self.log_queue.put((log_type, log_entry))
 
     def show_status_message(self, message: str, color: Optional[str] = None, duration: int = 4000):
         if self.status_message_job: self.root.after_cancel(self.status_message_job)
@@ -1993,9 +2108,6 @@ class InspectionProgram:
                         if row.get('event') == 'TRAY_COMPLETE':
                             details = json.loads(row['details'])
                             
-                            if details.get('is_defective_only_session', False):
-                                continue
-
                             master_code = details.get('master_label_code')
                             if not master_code: continue
 
