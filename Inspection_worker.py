@@ -52,7 +52,7 @@ def check_for_updates(app_instance):
             for asset in latest_release_data['assets']:
                 if asset['name'].endswith('.zip'):
                     return asset['browser_download_url'], latest_version
-        return None, None
+            return None, None
     except requests.exceptions.RequestException as e:
         print(f"업데이트 확인 중 오류: {e}")
         return None, None
@@ -282,6 +282,10 @@ class InspectionProgram:
         self.idle_check_job: Optional[str] = None
         self.focus_return_job: Optional[str] = None
         
+        # 사용자 상호작용 상태를 관리하기 위한 변수
+        self.is_excluding_item = False
+        self.exclusion_context = {}
+
         try:
             self.computer_id = hex(uuid.getnode())
         except Exception:
@@ -314,7 +318,7 @@ class InspectionProgram:
         if self.current_mode == "rework": 
             bg_color = self.COLOR_REWORK_BG
         elif self.current_mode == "remnant":
-             bg_color = self.COLOR_SPARE_BG
+            bg_color = self.COLOR_SPARE_BG
         
         highlight_color = self.COLOR_PRIMARY
         if self.current_mode == "rework": 
@@ -1112,7 +1116,7 @@ class InspectionProgram:
             instruction = f"\n총 {self.current_session.quantity}개 목표로 스캔하세요. (불량: {self.DEFECT_PEDAL_KEY_NAME} 페달)"
             text = f"{name_part}{instruction}"
         else: 
-            text = "현품표 또는 잔량표 라벨을 스캔하여 검사를 시작하세요."
+            text = "현품표 라벨을 스캔하여 검사를 시작하세요."
             color = self.COLOR_TEXT_SUBTLE
         
         self.current_item_label['text'], self.current_item_label['foreground'] = text, color
@@ -1200,8 +1204,8 @@ class InspectionProgram:
                 total_generated_defects = num_defect * num_pallets
                 if total_generated_defects < num_reworks:
                     messagebox.showwarning("설정 오류", 
-                                          f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
-                                          parent=popup)
+                                        f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
+                                        parent=popup)
                     return None
                 return num_good, num_defect, num_pallets, num_reworks, num_remnants
             except (ValueError, TypeError) as e:
@@ -1271,7 +1275,7 @@ class InspectionProgram:
                     defect_barcodes_this_pallet = [f"TEST-DEFECT-P{pallet_num}-{i}" for i in range(num_defect)]
                     generated_defects.extend(defect_barcodes_this_pallet)
                     items_to_scan = ([f"TEST-GOOD-P{pallet_num}-{i}" for i in range(num_good)] + 
-                                       defect_barcodes_this_pallet)
+                                        defect_barcodes_this_pallet)
                     random.shuffle(items_to_scan)
                     for barcode_base in items_to_scan:
                         barcode = f"{barcode_base}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
@@ -1423,7 +1427,7 @@ class InspectionProgram:
         item_code = session.item_code
         if item_code not in self.work_summary:
             self.work_summary[item_code] = {'name': session.item_name, 'spec': session.item_spec, 
-                                           'pallet_count': 0, 'test_pallet_count': 0, 'defective_ea_count': 0}
+                                            'pallet_count': 0, 'test_pallet_count': 0, 'defective_ea_count': 0}
         self.work_summary[item_code]['defective_ea_count'] += len(session.defective_items)
         if is_test:
             self.work_summary[item_code]['test_pallet_count'] += 1
@@ -1445,6 +1449,11 @@ class InspectionProgram:
         self.last_scan_time = current_time
         
         if not raw_barcode: return
+        
+        # --- [NEW] 제외품 스캔 상태인지 최우선으로 확인 ---
+        if getattr(self, 'is_excluding_item', False):
+            self._handle_exclusion_scan(raw_barcode)
+            return
         
         if raw_barcode.upper() == "_RUN_AUTO_TEST_":
             self.root.after(0, self._prompt_for_test_item)
@@ -1512,7 +1521,7 @@ class InspectionProgram:
                     item_code_from_barcode = item_code
                     break
             if not item_code_from_barcode:
-                 raise ValueError("바코드에서 품목 코드를 찾을 수 없습니다.")
+                    raise ValueError("바코드에서 품목 코드를 찾을 수 없습니다.")
         except Exception as e:
             self.show_fullscreen_warning("바코드 형식 오류", f"제품 바코드에서 유효한 품목 코드를 찾을 수 없습니다.\n{e}", self.COLOR_DEFECT)
             return
@@ -1537,25 +1546,65 @@ class InspectionProgram:
         self._update_remnant_list()
 
     def _process_inspection_scan(self, barcode: str):
-        if barcode.startswith("SPARE-"):
-            self._start_session_from_remnant(barcode)
-            return
-            
-        is_master_label_format = False
-        parsed_data = self._parse_new_format_qr(barcode)
-        if parsed_data:
-            is_master_label_format = True
-        elif len(barcode) == self.ITEM_CODE_LENGTH and any(item['Item Code'] == barcode for item in self.items_data):
-            is_master_label_format = True
+        # 현품표 작업이 진행 중일 때의 로직
+        if self.current_session.master_label_code:
+            # 잔량표를 스캔하여 현재 작업에 추가
+            if barcode.startswith("SPARE-"):
+                self._add_remnant_to_current_session(barcode)
+                return
 
-        if self.current_session.master_label_code and is_master_label_format and barcode != self.current_session.master_label_code:
-            self.show_status_message(f"'{self.current_session.item_name}' 작업을 자동 제출하고 새 작업을 시작합니다.", self.COLOR_PRIMARY)
-            self.root.update_idletasks()
-            time.sleep(1)
-            self.current_session.is_partial_submission = True
-            self.complete_session()
-        
-        if not self.current_session.master_label_code:
+            # 다른 현품표를 스캔하면, 현재 작업을 자동 제출하고 새 작업 시작
+            is_master_label_format = self._parse_new_format_qr(barcode) or \
+                                     (len(barcode) == self.ITEM_CODE_LENGTH and any(item['Item Code'] == barcode for item in self.items_data))
+            
+            if is_master_label_format and barcode != self.current_session.master_label_code:
+                self.show_status_message(f"'{self.current_session.item_name}' 작업을 자동 제출하고 새 작업을 시작합니다.", self.COLOR_PRIMARY)
+                self.root.update_idletasks()
+                time.sleep(1)
+                self.current_session.is_partial_submission = True
+                self.complete_session()
+                # 새 현품표 처리를 위해 재귀적으로 호출 (상태가 리셋된 후)
+                self.root.after(100, lambda: self._process_inspection_scan(barcode))
+                return
+            
+            # 일반 제품 바코드 스캔 처리
+            is_auto_testing_defect = getattr(self, 'is_auto_testing_defect', False)
+            is_defect_scan = keyboard.is_pressed(self.DEFECT_PEDAL_KEY_NAME.lower()) or is_auto_testing_defect
+            
+            if len(barcode) <= self.ITEM_CODE_LENGTH:
+                self.show_fullscreen_warning("바코드 형식 오류", f"제품 바코드는 {self.ITEM_CODE_LENGTH}자리보다 길어야 합니다.", self.COLOR_DEFECT)
+                return
+            if self.current_session.item_code not in barcode:
+                self.current_session.mismatch_error_count += 1
+                self.current_session.has_error_or_reset = True
+                self.show_fullscreen_warning("품목 코드 불일치!", f"제품의 품목 코드가 일치하지 않습니다.\n[기준: {self.current_session.item_code}]", self.COLOR_DEFECT)
+                self._log_event('SCAN_FAIL_MISMATCH', detail={'expected': self.current_session.item_code, 'scanned': barcode})
+                return
+            if barcode in self.current_session.scanned_barcodes:
+                self.current_session.mismatch_error_count += 1
+                self.current_session.has_error_or_reset = True
+                self.show_fullscreen_warning("바코드 중복!", f"제품 바코드 '{barcode}'는 이미 검사되었습니다.", self.COLOR_DEFECT)
+                self._log_event('SCAN_FAIL_DUPLICATE', detail={'barcode': barcode})
+                return
+            
+            status = 'Defective' if is_defect_scan else 'Good'
+            self.record_inspection_result(barcode, status)
+
+        # 현품표 작업이 없을 때의 로직 (새 작업 시작)
+        else:
+            # 잔량표를 먼저 스캔하면 오류 처리
+            if barcode.startswith("SPARE-"):
+                self._start_session_from_remnant(barcode)
+                return
+
+            # 현품표 스캔하여 새 작업 시작
+            is_master_label_format = False
+            parsed_data = self._parse_new_format_qr(barcode)
+            if parsed_data:
+                is_master_label_format = True
+            elif len(barcode) == self.ITEM_CODE_LENGTH and any(item['Item Code'] == barcode for item in self.items_data):
+                is_master_label_format = True
+
             if not is_master_label_format:
                 self.show_fullscreen_warning("작업 시작 오류", "먼저 현품표 라벨을 스캔하여 작업을 시작해주세요.", self.COLOR_DEFECT)
                 return
@@ -1584,7 +1633,7 @@ class InspectionProgram:
                 try: self.current_session.quantity = int(parsed_data.get('QT', self.TRAY_SIZE))
                 except (ValueError, TypeError): self.current_session.quantity = self.TRAY_SIZE
                 self._log_event('MASTER_LABEL_SCANNED', detail=parsed_data)
-            else:
+            else: # 레거시 바코드 형식
                 matched_item = next((item for item in self.items_data if item['Item Code'] == barcode), None)
                 if not matched_item:
                     self.show_fullscreen_warning("품목 없음", f"현품표 코드 '{barcode}'에 해당하는 품목 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
@@ -1600,30 +1649,6 @@ class InspectionProgram:
             self._update_current_item_label()
             self._start_stopwatch()
             self._save_current_session_state()
-            return
-
-        if self.current_session.master_label_code:
-            is_auto_testing_defect = getattr(self, 'is_auto_testing_defect', False)
-            is_defect_scan = keyboard.is_pressed(self.DEFECT_PEDAL_KEY_NAME.lower()) or is_auto_testing_defect
-            
-            if len(barcode) <= self.ITEM_CODE_LENGTH:
-                self.show_fullscreen_warning("바코드 형식 오류", f"제품 바코드는 {self.ITEM_CODE_LENGTH}자리보다 길어야 합니다.", self.COLOR_DEFECT)
-                return
-            if self.current_session.item_code not in barcode:
-                self.current_session.mismatch_error_count += 1
-                self.current_session.has_error_or_reset = True
-                self.show_fullscreen_warning("품목 코드 불일치!", f"제품의 품목 코드가 일치하지 않습니다.\n[기준: {self.current_session.item_code}]", self.COLOR_DEFECT)
-                self._log_event('SCAN_FAIL_MISMATCH', detail={'expected': self.current_session.item_code, 'scanned': barcode})
-                return
-            if barcode in self.current_session.scanned_barcodes:
-                self.current_session.mismatch_error_count += 1
-                self.current_session.has_error_or_reset = True
-                self.show_fullscreen_warning("바코드 중복!", f"제품 바코드 '{barcode}'는 이미 검사되었습니다.", self.COLOR_DEFECT)
-                self._log_event('SCAN_FAIL_DUPLICATE', detail={'barcode': barcode})
-                return
-            
-            status = 'Defective' if is_defect_scan else 'Good'
-            self.record_inspection_result(barcode, status)
     
     def record_inspection_result(self, barcode: str, status: str):
         if status == 'Good':
@@ -1767,42 +1792,188 @@ class InspectionProgram:
         self._schedule_focus_return()
 
     def _start_session_from_remnant(self, remnant_id: str):
-        if self.current_session.master_label_code:
-            if not messagebox.askyesno("작업 전환", "진행 중인 작업이 있습니다. 현재 작업을 중단하고 잔량 검사를 시작할까요?"):
-                return
-            self.reset_current_work()
-
+        self.show_fullscreen_warning("작업 순서 오류", "현품표를 먼저 스캔해주세요.\n\n잔량표는 진행 중인 작업에 추가할 때만 사용할 수 있습니다.", self.COLOR_DEFECT)
+        self._log_event('SCAN_FAIL_REMANT_WITHOUT_MASTER', detail={'remnant_id': remnant_id})
+    
+    def _add_remnant_to_current_session(self, remnant_id: str):
         remnant_filepath = os.path.join(self.remnants_folder, f"{remnant_id}.json")
         if not os.path.exists(remnant_filepath):
             self.show_fullscreen_warning("잔량표 없음", f"해당 잔량 ID({remnant_id})를 찾을 수 없습니다.", self.COLOR_DEFECT)
-            self._log_event('SCAN_FAIL_REMNANT_NOT_FOUND', detail={'id': remnant_id})
             return
 
         try:
             with open(remnant_filepath, 'r', encoding='utf-8') as f:
                 remnant_data = json.load(f)
 
-            self.current_session = InspectionSession()
-            self.current_session.master_label_code = remnant_id
-            self.current_session.item_code = remnant_data['item_code']
-            self.current_session.item_name = remnant_data['item_name']
-            self.current_session.quantity = len(remnant_data['remnant_barcodes'])
-            self.current_session.is_remnant_session = True
-            
-            self._log_event('REMNANT_SESSION_START', detail=remnant_data)
-            os.remove(remnant_filepath)
-            
-            self._apply_mode_ui()
-            self._update_center_display()
-            self._update_current_item_label()
-            self._start_stopwatch()
-            self._save_current_session_state()
-            self.show_status_message(f"잔량 검사를 시작합니다. (ID: {remnant_id})", self.COLOR_SPARE)
+            if remnant_data.get('item_code') != self.current_session.item_code:
+                self.show_fullscreen_warning("품목 불일치", "현재 작업과 다른 품목의 잔량표는 추가할 수 없습니다.", self.COLOR_DEFECT)
+                return
 
-        except (json.JSONDecodeError, KeyError) as e:
-            messagebox.showerror("파일 오류", f"잔량 파일 형식이 잘못되었습니다: {e}")
+            remnant_barcodes = remnant_data.get('remnant_barcodes', [])
+            space_available = self.current_session.quantity - len(self.current_session.scanned_barcodes)
+            items_to_leave = len(remnant_barcodes) - space_available
+
+            if space_available <= 0:
+                self.show_status_message("이미 목표 수량을 모두 채웠습니다.", self.COLOR_IDLE)
+                return
+
+            # 사용자에게 작업 방식을 묻는 팝업 호출
+            self._prompt_remnant_fill_method(space_available, items_to_leave, remnant_id, remnant_data)
+
         except Exception as e:
-            messagebox.showerror("오류", f"잔량 작업 시작 중 오류가 발생했습니다: {e}")
+            messagebox.showerror("잔량 추가 오류", f"잔량 데이터를 추가하는 중 오류가 발생했습니다:\n{e}")
+
+    def _prompt_remnant_fill_method(self, items_needed, items_to_leave, remnant_id, remnant_data):
+        popup = tk.Toplevel(self.root)
+        popup.title("잔량 추가 방식 선택")
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.geometry("600x400")
+        
+        main_frame = ttk.Frame(popup, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        title_label = ttk.Label(main_frame, text="잔량 처리 방법을 선택하세요.", font=(self.DEFAULT_FONT, 16, 'bold'))
+        title_label.pack(pady=(0, 20))
+
+        info_text = (f"현재 현품표에 필요한 수량: {items_needed}개\n"
+                     f"스캔한 잔량표의 총 수량: {items_needed + items_to_leave}개")
+        info_label = ttk.Label(main_frame, text=info_text, font=(self.DEFAULT_FONT, 12))
+        info_label.pack(pady=(0, 30))
+
+        choice = tk.StringVar()
+
+        def on_confirm():
+            selected_choice = choice.get()
+            popup.destroy()
+            if selected_choice == 'scan_needed':
+                self.show_status_message(f"필요한 {items_needed}개의 제품을 개별 스캔하세요.", self.COLOR_PRIMARY, duration=10000)
+            elif selected_choice == 'scan_excluded':
+                self.is_excluding_item = True
+                self.exclusion_context = {
+                    'remnant_id': remnant_id,
+                    'remnant_data': remnant_data,
+                    'items_to_exclude_count': items_to_leave,
+                    'excluded_items': []
+                }
+                self.show_status_message(f" 제외할 {items_to_leave}개 제품을 스캔하세요.", self.COLOR_DEFECT, duration=15000)
+        
+        # 더 적은 쪽을 스캔하도록 유도
+        if items_needed <= items_to_leave:
+            # 채울 개수가 더 적거나 같을 때
+            btn1_text = f"✅ 부족한 {items_needed}개 채우기 (개별 스캔)"
+            btn1 = ttk.Button(main_frame, text=btn1_text, command=lambda: choice.set('scan_needed') or on_confirm())
+            btn1.pack(pady=10, ipady=15, fill=tk.X)
+            btn1.focus_set()
+            
+            btn2_text = f"남는 {items_to_leave}개 제외하기 (제외품 스캔)"
+            btn2 = ttk.Button(main_frame, text=btn2_text, command=lambda: choice.set('scan_excluded') or on_confirm())
+            btn2.pack(pady=10, ipady=15, fill=tk.X)
+        else:
+            # 제외할 개수가 더 적을 때
+            btn1_text = f"✅ 남는 {items_to_leave}개 제외하기 (제외품 스캔)"
+            btn1 = ttk.Button(main_frame, text=btn1_text, command=lambda: choice.set('scan_excluded') or on_confirm())
+            btn1.pack(pady=10, ipady=15, fill=tk.X)
+            btn1.focus_set()
+
+            btn2_text = f"부족한 {items_needed}개 채우기 (개별 스캔)"
+            btn2 = ttk.Button(main_frame, text=btn2_text, command=lambda: choice.set('scan_needed') or on_confirm())
+            btn2.pack(pady=10, ipady=15, fill=tk.X)
+            
+        self.root.wait_window(popup)
+
+    def _handle_exclusion_scan(self, excluded_barcode: str):
+        ctx = self.exclusion_context
+        remnant_barcodes = ctx['remnant_data'].get('remnant_barcodes', [])
+
+        if excluded_barcode not in remnant_barcodes:
+            self.show_fullscreen_warning("스캔 오류", "이 바코드는 원래 잔량표에 포함되지 않은 제품입니다.", self.COLOR_DEFECT)
+            return
+
+        if excluded_barcode in ctx['excluded_items']:
+            self.show_status_message(f"이미 제외 목록에 추가된 바코드입니다: {excluded_barcode}", self.COLOR_IDLE)
+            return
+            
+        if self.success_sound: self.success_sound.play()
+        ctx['excluded_items'].append(excluded_barcode)
+        
+        remaining_to_exclude = ctx['items_to_exclude_count'] - len(ctx['excluded_items'])
+
+        if remaining_to_exclude > 0:
+            self.show_status_message(f"제외 완료. 남은 {remaining_to_exclude}개의 제외품을 스캔하세요.", self.COLOR_DEFECT, duration=15000)
+        else:
+            # 제외품 스캔이 모두 끝난 시점
+            self.show_status_message("제외품 스캔 완료. 데이터를 처리합니다...", self.COLOR_SUCCESS)
+            
+            # 1. 현품표에 추가할 제품 목록을 확정하고 추가
+            barcodes_to_add = [b for b in remnant_barcodes if b not in ctx['excluded_items']]
+            for barcode in barcodes_to_add:
+                self.record_inspection_result(barcode, 'Good')
+            
+            # 2. 제외된 제품들로 새 잔량표 생성
+            if ctx['excluded_items']:
+                self._create_new_remnant_from_list(ctx['excluded_items'], ctx['remnant_data'])
+            
+            # 3. 원본 잔량 파일(json, png) 삭제
+            remnant_id = ctx['remnant_id']
+            remnant_filepath_json = os.path.join(self.remnants_folder, f"{remnant_id}.json")
+            remnant_filepath_png = os.path.join(self.labels_folder, f"{remnant_id}.png")
+            
+            if os.path.exists(remnant_filepath_json):
+                os.remove(remnant_filepath_json)
+            try:
+                if os.path.exists(remnant_filepath_png):
+                    os.remove(remnant_filepath_png)
+            except FileNotFoundError:
+                pass # 이미지가 없어도 괜찮음
+            
+            # 4. 상태 초기화
+            self.is_excluding_item = False
+            self.exclusion_context = {}
+
+    def _create_new_remnant_from_list(self, barcodes: List[str], original_remnant_data: Dict):
+        """바코드 리스트로부터 새로운 잔량표를 생성하는 헬퍼 함수"""
+        self.show_status_message(f"초과분 {len(barcodes)}개로 새 잔량표 생성 중...", self.COLOR_SPARE, 5000)
+        
+        now = datetime.datetime.now()
+        new_remnant_id = f"SPARE-{now.strftime('%Y%m%d-%H%M%S%f')}"
+        
+        new_remnant_data = {
+            "remnant_id": new_remnant_id,
+            "creation_date": now.isoformat(),
+            "worker": self.worker_name,
+            "item_code": original_remnant_data['item_code'],
+            "item_name": original_remnant_data['item_name'],
+            "item_spec": original_remnant_data['item_spec'],
+            "remnant_barcodes": barcodes
+        }
+
+        try:
+            filepath = os.path.join(self.remnants_folder, f"{new_remnant_id}.json")
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(new_remnant_data, f, ensure_ascii=False, indent=4)
+            self._log_event('REMNANT_CREATED_FROM_OVERFLOW', detail=new_remnant_data)
+        except Exception as e:
+            messagebox.showerror("저장 실패", f"초과분 잔량 파일 저장 중 오류 발생: {e}")
+            return
+            
+        try:
+            image_path = self._generate_remnant_label_image(
+                remnant_id=new_remnant_id,
+                item_code=new_remnant_data['item_code'],
+                item_name=new_remnant_data['item_name'],
+                item_spec=new_remnant_data['item_spec'],
+                quantity=len(new_remnant_data['remnant_barcodes']),
+                worker_name=self.worker_name,
+                creation_date=now.strftime('%Y-%m-%d %H:%M:%S')
+            )
+            if sys.platform == "win32":
+                os.startfile(image_path)
+            
+            messagebox.showinfo("초과분 잔량 생성 완료", f"현품표 작업을 완료하고 남은 {len(barcodes)}개의 제품으로\n새로운 잔량표를 생성했습니다.\n\n신규 잔량 ID: {new_remnant_id}")
+
+        except Exception as e:
+            messagebox.showwarning("이미지 생성 실패", f"새 잔량 라벨 이미지 생성에 실패했습니다: {e}")
 
     def _update_remnant_list(self):
         for i in self.remnant_items_tree.get_children():
@@ -1894,7 +2065,7 @@ class InspectionProgram:
 
         qr_data = json.dumps({'id': remnant_id, 'code': item_code, 'qty': quantity})
         qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L,
-                           box_size=config['qr_code']['box_size'], border=config['qr_code']['border'])
+                            box_size=config['qr_code']['box_size'], border=config['qr_code']['border'])
         qr.add_data(qr_data)
         qr.make(fit=True)
         qr_img = qr.make_image(fill_color=config['text_color'], back_color=config['bg_color']).resize((config['qr_code']['size'], config['qr_code']['size']))
@@ -1939,7 +2110,7 @@ class InspectionProgram:
             footer_y = H - config['layout']['footer_bottom_margin']
             line_y = footer_y - config['layout']['footer_line_margin']
             draw_obj.line([(config['padding'], line_y), (W - config['padding'], line_y)], fill=config['text_color'], width=1)
-            footer_text = f"잔량 ID: {remnant_id}  |  생성일: {creation_date}  |  작업자: {worker_name}"
+            footer_text = f"잔량 ID: {remnant_id}   |   생성일: {creation_date}   |   작업자: {worker_name}"
             draw_obj.text((config['padding'], footer_y), footer_text, font=fonts['footer'], fill=config['text_color'])
 
         content_start_y = draw_header(draw)
