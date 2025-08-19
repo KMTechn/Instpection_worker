@@ -36,7 +36,7 @@ except ImportError:
 
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Instpection_worker"
-CURRENT_VERSION = "v2.3.4" 
+CURRENT_VERSION = "v2.3.4"
 
 def check_for_updates(app_instance):
     """GitHub에서 최신 릴리스를 확인합니다."""
@@ -303,6 +303,7 @@ class InspectionProgram:
         self.root.bind_all(f"<KeyRelease-{self.DEFECT_PEDAL_KEY_NAME}>", self.on_pedal_release_ui_feedback)
         
         self.is_auto_testing_defect = False
+        self.is_auto_testing = False
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -531,6 +532,7 @@ class InspectionProgram:
                     reader = list(csv.DictReader(f))
                 
                 for row in reader:
+                    # 현재 로그인한 작업자의 기록이 아니면 건너뜁니다.
                     if row.get('worker') != self.worker_name: continue
                     
                     if row.get('event') == 'REWORK_SUCCESS':
@@ -557,6 +559,10 @@ class InspectionProgram:
                 with open(log_path, 'r', encoding='utf-8-sig') as f:
                     reader = csv.DictReader(f)
                     for row in reader:
+                        # [수정된 부분] 현재 로그인한 작업자의 기록이 아니면 건너뜁니다.
+                        if row.get('worker') != self.worker_name:
+                            continue
+                        
                         if row.get('event') == 'TRAY_COMPLETE':
                             try:
                                 details = json.loads(row['details'])
@@ -1204,8 +1210,8 @@ class InspectionProgram:
                 total_generated_defects = num_defect * num_pallets
                 if total_generated_defects < num_reworks:
                     messagebox.showwarning("설정 오류", 
-                                        f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
-                                        parent=popup)
+                                         f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
+                                         parent=popup)
                     return None
                 return num_good, num_defect, num_pallets, num_reworks, num_remnants
             except (ValueError, TypeError) as e:
@@ -1243,95 +1249,130 @@ class InspectionProgram:
         ttk.Button(button_container, text="취소", command=popup.destroy).pack(side=tk.LEFT, padx=10)
 
     def _automated_test_sequence(self, test_item_code: str, num_good: int, num_defect: int, num_pallets: int, num_reworks: int, num_remnants: int):
+        """
+        [개선됨] 실제 사용자와 유사하게 동작하는 자동 테스트 시퀀스입니다.
+        로그인/아웃 없이 현재 작업자 계정으로 테스트를 수행하며, 중간 팝업 없이 끝까지 자동으로 진행됩니다.
+        """
+        self.is_auto_testing = True
+        self.is_simulating_defect_press = False
+        original_title = self.root.title()
+        self.root.after(0, lambda: self.root.title(f"{original_title} (자동 테스트 실행 중...)"))
+
         try:
-            TEST_WORKER = "AutoTester"
-            DELAY = 0.2
-            self.root.after(0, lambda: messagebox.showinfo("테스트 시작", 
-                f"자동화된 테스트를 시작합니다.\n\n"
-                f"· 작업자: {TEST_WORKER}\n"
-                f"· 검사: {test_item_code} (양품 {num_good}, 불량 {num_defect}) x {num_pallets} 파렛트\n"
+            # --- 헬퍼 함수: UI 스캔 시뮬레이션 ---
+            def simulate_scan(barcode_to_scan: str, target_entry: tk.Entry):
+                self.root.after(0, target_entry.delete, 0, tk.END)
+                self.root.after(10, lambda: target_entry.insert(0, barcode_to_scan))
+                self.root.after(20, target_entry.event_generate, '<Return>')
+                time.sleep(0.1) # UI 이벤트 처리를 위한 최소 대기
+
+            # --- 0. 테스트 시작 안내 ---
+            self.root.after(0, lambda: messagebox.showinfo("테스트 시작",
+                f"자동 시뮬레이션 테스트를 시작합니다.\n\n"
+                f"현재 작업자 '{self.worker_name}' 계정으로 테스트 데이터가 기록됩니다.\n\n"
+                f"· 검사: '{test_item_code}' (양품 {num_good}, 불량 {num_defect}) x {num_pallets}회\n"
                 f"· 리워크: {num_reworks}개\n"
                 f"· 잔량 등록: {num_remnants}개"))
-            time.sleep(DELAY * 2)
+            time.sleep(random.uniform(0.8, 1.2)) # 사용자가 메시지를 읽고 확인하는 시간
 
-            if self.worker_name:
-                self.root.after(0, self.change_worker)
-                time.sleep(DELAY)
-            self.root.after(0, lambda: self.worker_entry.insert(0, TEST_WORKER))
-            time.sleep(0.1)
-            self.root.after(0, self.start_work)
-            self.root.after(0, lambda: self.show_status_message("로그인 자동 실행", self.COLOR_PRIMARY))
-            time.sleep(DELAY)
-
+            # --- 1. 검사 시뮬레이션 ---
             generated_defects = []
             if num_pallets > 0 and (num_good > 0 or num_defect > 0):
-                for pallet_num in range(num_pallets):
-                    self.root.after(0, lambda p=pallet_num+1: self.show_status_message(f"파렛트 {p}/{num_pallets} 검사 시작", self.COLOR_PRIMARY))
-                    time.sleep(DELAY)
+                for i in range(num_pallets):
+                    pallet_num = i + 1
+                    self.root.after(0, lambda p=pallet_num: self.show_status_message(f"테스트: 파렛트 {p}/{num_pallets} 검사 중...", self.COLOR_PRIMARY, 5000))
+                    
                     master_label = self._generate_test_master_label(test_item_code, quantity=(num_good + num_defect))
-                    self.root.after(0, lambda ml=master_label: self._process_scan_logic(ml))
-                    self.root.after(0, lambda: self.show_status_message("현품표 스캔", self.COLOR_PRIMARY))
-                    time.sleep(DELAY)
-                    defect_barcodes_this_pallet = [f"TEST-DEFECT-P{pallet_num}-{i}" for i in range(num_defect)]
+                    simulate_scan(master_label, self.scan_entry_inspection)
+                    # 현품표 스캔 후, 세션이 test tray로 설정되도록 잠시 대기
+                    time.sleep(0.2) 
+                    if self.current_session.master_label_code:
+                         self.current_session.is_test_tray = True
+
+                    time.sleep(random.uniform(0.8, 1.2)) # 다음 작업 전 생각하는 시간
+
+                    defect_barcodes_this_pallet = [f"TEST-DEFECT-P{pallet_num}-{j}" for j in range(num_defect)]
                     generated_defects.extend(defect_barcodes_this_pallet)
-                    items_to_scan = ([f"TEST-GOOD-P{pallet_num}-{i}" for i in range(num_good)] + 
-                                        defect_barcodes_this_pallet)
+                    items_to_scan = ([f"TEST-GOOD-P{pallet_num}-{j}" for j in range(num_good)] + defect_barcodes_this_pallet)
                     random.shuffle(items_to_scan)
-                    for barcode_base in items_to_scan:
-                        barcode = f"{barcode_base}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
-                        is_defect = "DEFECT" in barcode
-                        self.is_auto_testing_defect = is_defect
-                        self.root.after(0, lambda b=barcode: self._process_scan_logic(b))
-                        time.sleep(0.05)
-                    self.is_auto_testing_defect = False
-                    time.sleep(0.1)
 
-            time.sleep(DELAY * 5)
-            
-            if num_reworks > 0:
-                self.root.after(0, lambda: self.show_status_message(f"{num_reworks}개 리워크 테스트 시작", self.COLOR_REWORK))
-                time.sleep(DELAY)
-                self.root.after(0, self.toggle_rework_mode)
-                time.sleep(DELAY)
-                def perform_reworks():
-                    reworks_to_perform = min(num_reworks, len(generated_defects))
-                    if reworks_to_perform < num_reworks:
-                        print(f"Warning: Requested {num_reworks} reworks, but only generated {len(generated_defects)} defects.")
-                    for i in range(reworks_to_perform):
-                        barcode_to_rework = f"{generated_defects[i]}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
-                        self.root.after(0, lambda b=barcode_to_rework: self._process_scan_logic(b))
-                        self.root.after(0, lambda i=i+1, b=barcode_to_rework: self.show_status_message(f"리워크 스캔 ({i}/{reworks_to_perform})", self.COLOR_REWORK))
-                        time.sleep(DELAY)
-                threading.Thread(target=perform_reworks, daemon=True).start()
-                time.sleep(num_reworks * (DELAY + 0.1) + 0.5)
-                self.root.after(0, self.toggle_rework_mode)
-                self.root.after(0, lambda: self.show_status_message("일반 모드로 복귀", self.COLOR_PRIMARY))
-                time.sleep(DELAY)
+                    for item_barcode_base in items_to_scan:
+                        full_barcode = f"{item_barcode_base}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
+                        is_defect = "DEFECT" in full_barcode
 
-            if num_remnants > 0:
-                self.root.after(0, lambda: self.show_status_message(f"{num_remnants}개 잔량 등록 테스트 시작", self.COLOR_SPARE))
-                time.sleep(DELAY)
+                        if is_defect:
+                            self.is_simulating_defect_press = True
+                            self.root.after(0, self.on_pedal_press_ui_feedback)
+                            time.sleep(0.1) # 페달을 누르고 있는 시간
+                        
+                        simulate_scan(full_barcode, self.scan_entry_inspection)
+                        
+                        if is_defect:
+                            time.sleep(0.1) # 키 떼는 시간
+                            self.is_simulating_defect_press = False
+                            self.root.after(0, self.on_pedal_release_ui_feedback)
+
+                        time.sleep(random.uniform(0.3, 0.8)) # 다음 제품 스캔 딜레이
+
+                    # 파렛트가 자동으로 완료될 때까지 최대 10초 대기
+                    wait_start = time.monotonic()
+                    while self.current_session.master_label_code:
+                        time.sleep(0.1)
+                        if time.monotonic() - wait_start > 10: raise TimeoutError("파렛트 완료 처리를 기다리는 데 시간이 초과되었습니다.")
+                    
+                    self.root.after(0, lambda p=pallet_num: self.show_status_message(f"테스트: 파렛트 {p} 검사 완료", self.COLOR_SUCCESS))
+                    time.sleep(random.uniform(1.0, 1.5)) # 다음 파렛트 작업 전 휴식
+
+            # --- 2. 리워크 시뮬레이션 ---
+            if num_reworks > 0 and generated_defects:
+                self.root.after(0, self.toggle_rework_mode)
+                self.root.after(0, lambda: self.show_status_message(f"테스트: 리워크 작업 시뮬레이션 ({num_reworks}개)", self.COLOR_REWORK, 5000))
+                time.sleep(1)
+
+                reworks_to_do = min(num_reworks, len(generated_defects))
+                for i in range(reworks_to_do):
+                    rework_barcode = f"{generated_defects[i]}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
+                    simulate_scan(rework_barcode, self.scan_entry_rework)
+                    time.sleep(random.uniform(0.5, 1.0))
                 
-                self.root.after(0, self.toggle_remnant_mode)
-                time.sleep(DELAY)
+                self.root.after(0, self.toggle_rework_mode)
+                self.root.after(0, lambda: self.show_status_message("테스트: 리워크 작업 완료", self.COLOR_SUCCESS))
+                time.sleep(1)
 
-                remnant_item = random.choice([i for i in self.items_data if i.get('Item Code') != test_item_code] or self.items_data)
+            # --- 3. 잔량 생성 시뮬레이션 ---
+            if num_remnants > 0:
+                self.root.after(0, self.toggle_remnant_mode)
+                self.root.after(0, lambda: self.show_status_message(f"테스트: 잔량 등록 시뮬레이션 ({num_remnants}개)", self.COLOR_SPARE, 5000))
+                time.sleep(1)
+                
+                # 다른 품목으로 잔량 테스트
+                remnant_item = random.choice([it for it in self.items_data if it.get('Item Code') != test_item_code] or self.items_data)
                 remnant_item_code = remnant_item.get('Item Code')
 
                 for i in range(num_remnants):
-                    barcode = f"TEST-REMNANT-{i}-{remnant_item_code}-{datetime.datetime.now().strftime('%f')}"
-                    self.root.after(0, lambda b=barcode: self._process_scan_logic(b))
-                    time.sleep(0.05)
+                    remnant_barcode = f"TEST-REMNANT-{i}-{remnant_item_code}-{datetime.datetime.now().strftime('%f')}"
+                    simulate_scan(remnant_barcode, self.scan_entry_remnant)
+                    time.sleep(random.uniform(0.4, 0.9))
                 
-                time.sleep(DELAY)
-                self.root.after(0, self._generate_remnant_label)
-                time.sleep(DELAY * 5)
+                # 팝업 없이 라벨 생성 로직만 실행
+                self.root.after(0, lambda: self._generate_remnant_label(show_popup=False))
+                self.root.after(0, lambda: self.show_status_message("테스트: 잔량 라벨 생성 완료 (팝업 없음)", self.COLOR_SUCCESS))
+                time.sleep(1.5)
 
-            self.root.after(0, lambda: messagebox.showinfo("테스트 완료", "자동화된 테스트가 성공적으로 완료되었습니다."))
+            # --- 4. 테스트 성공 알림 ---
+            self.root.after(0, lambda: messagebox.showinfo("테스트 완료", "자동 시뮬레이션 테스트가 성공적으로 완료되었습니다."))
 
         except Exception as e:
-            self.is_auto_testing_defect = False
             self.root.after(0, lambda: messagebox.showerror("테스트 오류", f"자동 테스트 중 오류가 발생했습니다:\n{e}"))
+        finally:
+            # --- 5. 정리 작업 ---
+            self.is_auto_testing = False
+            self.is_simulating_defect_press = False
+            self.root.after(0, self.on_pedal_release_ui_feedback)
+            self.root.after(0, lambda: self.root.title(original_title))
+            self.root.after(0, self._update_all_summaries) # UI 최종 업데이트
+            self.root.after(0, self._schedule_focus_return)
+            self.root.after(0, self._reset_status_message)
 
     def _generate_test_master_label(self, item_code: str, quantity: int = 10) -> str:
         now = datetime.datetime.now()
@@ -1393,6 +1434,7 @@ class InspectionProgram:
             session.quantity = items_for_this_pallet
             session.start_time = datetime.datetime.now()
             session.stopwatch_seconds = random.uniform(120.0, 300.0)
+            session.is_test_tray = True
             for i in range(items_for_this_pallet):
                 barcode = f"TEST-{status.upper()}-{session.item_code}-{timestamp}-{i:03d}"
                 item_data = {'barcode': barcode, 'timestamp': datetime.datetime.now().isoformat(), 'status': status}
@@ -1409,7 +1451,9 @@ class InspectionProgram:
         self.root.after(0, lambda: self.show_status_message(f"고속 테스트 로그 {count}개 생성 완료!", self.COLOR_SUCCESS))
     
     def _complete_session_logic_only(self, session: InspectionSession):
-        is_test = "TEST" in session.master_label_code
+        # [개선됨] is_test 플래그를 is_test_tray 속성을 기반으로 설정
+        is_test = session.is_test_tray
+        
         log_detail = {
             'master_label_code': session.master_label_code, 'item_code': session.item_code,
             'item_name': session.item_name, 'item_spec': session.item_spec,
@@ -1420,7 +1464,8 @@ class InspectionProgram:
             'total_idle_seconds': session.total_idle_seconds, 'has_error_or_reset': session.has_error_or_reset,
             'is_partial_submission': session.is_partial_submission, 'is_restored_session': session.is_restored_session,
             'start_time': session.start_time.isoformat() if session.start_time else None,
-            'end_time': datetime.datetime.now().isoformat(), 'is_test': is_test,
+            'end_time': datetime.datetime.now().isoformat(), 
+            'is_test': is_test, # 이 값을 기반으로 로그 파일이 기록됨
             'is_remnant_session': session.is_remnant_session 
         }
         self._log_event('TRAY_COMPLETE', detail=log_detail)
@@ -1450,7 +1495,6 @@ class InspectionProgram:
         
         if not raw_barcode: return
         
-        # --- [NEW] 제외품 스캔 상태인지 최우선으로 확인 ---
         if getattr(self, 'is_excluding_item', False):
             self._handle_exclusion_scan(raw_barcode)
             return
@@ -1546,16 +1590,13 @@ class InspectionProgram:
         self._update_remnant_list()
 
     def _process_inspection_scan(self, barcode: str):
-        # 현품표 작업이 진행 중일 때의 로직
         if self.current_session.master_label_code:
-            # 잔량표를 스캔하여 현재 작업에 추가
             if barcode.startswith("SPARE-"):
                 self._add_remnant_to_current_session(barcode)
                 return
 
-            # 다른 현품표를 스캔하면, 현재 작업을 자동 제출하고 새 작업 시작
             is_master_label_format = self._parse_new_format_qr(barcode) or \
-                                     (len(barcode) == self.ITEM_CODE_LENGTH and any(item['Item Code'] == barcode for item in self.items_data))
+                                         (len(barcode) == self.ITEM_CODE_LENGTH and any(item['Item Code'] == barcode for item in self.items_data))
             
             if is_master_label_format and barcode != self.current_session.master_label_code:
                 self.show_status_message(f"'{self.current_session.item_name}' 작업을 자동 제출하고 새 작업을 시작합니다.", self.COLOR_PRIMARY)
@@ -1563,13 +1604,12 @@ class InspectionProgram:
                 time.sleep(1)
                 self.current_session.is_partial_submission = True
                 self.complete_session()
-                # 새 현품표 처리를 위해 재귀적으로 호출 (상태가 리셋된 후)
                 self.root.after(100, lambda: self._process_inspection_scan(barcode))
                 return
             
-            # 일반 제품 바코드 스캔 처리
             is_auto_testing_defect = getattr(self, 'is_auto_testing_defect', False)
-            is_defect_scan = keyboard.is_pressed(self.DEFECT_PEDAL_KEY_NAME.lower()) or is_auto_testing_defect
+            is_simulating_defect_press = getattr(self, 'is_simulating_defect_press', False)
+            is_defect_scan = keyboard.is_pressed(self.DEFECT_PEDAL_KEY_NAME.lower()) or is_auto_testing_defect or is_simulating_defect_press
             
             if len(barcode) <= self.ITEM_CODE_LENGTH:
                 self.show_fullscreen_warning("바코드 형식 오류", f"제품 바코드는 {self.ITEM_CODE_LENGTH}자리보다 길어야 합니다.", self.COLOR_DEFECT)
@@ -1590,14 +1630,11 @@ class InspectionProgram:
             status = 'Defective' if is_defect_scan else 'Good'
             self.record_inspection_result(barcode, status)
 
-        # 현품표 작업이 없을 때의 로직 (새 작업 시작)
         else:
-            # 잔량표를 먼저 스캔하면 오류 처리
             if barcode.startswith("SPARE-"):
                 self._start_session_from_remnant(barcode)
                 return
 
-            # 현품표 스캔하여 새 작업 시작
             is_master_label_format = False
             parsed_data = self._parse_new_format_qr(barcode)
             if parsed_data:
@@ -1633,7 +1670,7 @@ class InspectionProgram:
                 try: self.current_session.quantity = int(parsed_data.get('QT', self.TRAY_SIZE))
                 except (ValueError, TypeError): self.current_session.quantity = self.TRAY_SIZE
                 self._log_event('MASTER_LABEL_SCANNED', detail=parsed_data)
-            else: # 레거시 바코드 형식
+            else: 
                 matched_item = next((item for item in self.items_data if item['Item Code'] == barcode), None)
                 if not matched_item:
                     self.show_fullscreen_warning("품목 없음", f"현품표 코드 '{barcode}'에 해당하는 품목 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
@@ -1702,6 +1739,7 @@ class InspectionProgram:
         self._update_summary_title()
 
     def _redraw_scan_trees(self):
+        # [수정됨] 자동 테스트 중에도 화면이 업데이트되도록 수정
         if not hasattr(self, 'good_items_tree') or not self.good_items_tree.winfo_exists(): return
         for i in self.good_items_tree.get_children(): self.good_items_tree.delete(i)
         for i in self.defective_items_tree.get_children(): self.defective_items_tree.delete(i)
@@ -1817,7 +1855,6 @@ class InspectionProgram:
                 self.show_status_message("이미 목표 수량을 모두 채웠습니다.", self.COLOR_IDLE)
                 return
 
-            # 사용자에게 작업 방식을 묻는 팝업 호출
             self._prompt_remnant_fill_method(space_available, items_to_leave, remnant_id, remnant_data)
 
         except Exception as e:
@@ -1858,9 +1895,7 @@ class InspectionProgram:
                 }
                 self.show_status_message(f" 제외할 {items_to_leave}개 제품을 스캔하세요.", self.COLOR_DEFECT, duration=15000)
         
-        # 더 적은 쪽을 스캔하도록 유도
         if items_needed <= items_to_leave:
-            # 채울 개수가 더 적거나 같을 때
             btn1_text = f"✅ 부족한 {items_needed}개 채우기 (개별 스캔)"
             btn1 = ttk.Button(main_frame, text=btn1_text, command=lambda: choice.set('scan_needed') or on_confirm())
             btn1.pack(pady=10, ipady=15, fill=tk.X)
@@ -1870,7 +1905,6 @@ class InspectionProgram:
             btn2 = ttk.Button(main_frame, text=btn2_text, command=lambda: choice.set('scan_excluded') or on_confirm())
             btn2.pack(pady=10, ipady=15, fill=tk.X)
         else:
-            # 제외할 개수가 더 적을 때
             btn1_text = f"✅ 남는 {items_to_leave}개 제외하기 (제외품 스캔)"
             btn1 = ttk.Button(main_frame, text=btn1_text, command=lambda: choice.set('scan_excluded') or on_confirm())
             btn1.pack(pady=10, ipady=15, fill=tk.X)
@@ -1902,19 +1936,15 @@ class InspectionProgram:
         if remaining_to_exclude > 0:
             self.show_status_message(f"제외 완료. 남은 {remaining_to_exclude}개의 제외품을 스캔하세요.", self.COLOR_DEFECT, duration=15000)
         else:
-            # 제외품 스캔이 모두 끝난 시점
             self.show_status_message("제외품 스캔 완료. 데이터를 처리합니다...", self.COLOR_SUCCESS)
             
-            # 1. 현품표에 추가할 제품 목록을 확정하고 추가
             barcodes_to_add = [b for b in remnant_barcodes if b not in ctx['excluded_items']]
             for barcode in barcodes_to_add:
                 self.record_inspection_result(barcode, 'Good')
             
-            # 2. 제외된 제품들로 새 잔량표 생성
             if ctx['excluded_items']:
                 self._create_new_remnant_from_list(ctx['excluded_items'], ctx['remnant_data'])
             
-            # 3. 원본 잔량 파일(json, png) 삭제
             remnant_id = ctx['remnant_id']
             remnant_filepath_json = os.path.join(self.remnants_folder, f"{remnant_id}.json")
             remnant_filepath_png = os.path.join(self.labels_folder, f"{remnant_id}.png")
@@ -1925,9 +1955,8 @@ class InspectionProgram:
                 if os.path.exists(remnant_filepath_png):
                     os.remove(remnant_filepath_png)
             except FileNotFoundError:
-                pass # 이미지가 없어도 괜찮음
+                pass
             
-            # 4. 상태 초기화
             self.is_excluding_item = False
             self.exclusion_context = {}
 
@@ -1985,9 +2014,10 @@ class InspectionProgram:
         count = len(self.current_remnant_session.scanned_barcodes)
         self.remnant_count_label.config(text=f"수량: {count}")
     
-    def _generate_remnant_label(self):
+    def _generate_remnant_label(self, show_popup=True):
         if not self.current_remnant_session.scanned_barcodes:
-            messagebox.showwarning("오류", "등록된 잔량 품목이 없습니다.", parent=self.root)
+            if show_popup:
+                messagebox.showwarning("오류", "등록된 잔량 품목이 없습니다.", parent=self.root)
             return
 
         now = datetime.datetime.now()
@@ -2008,7 +2038,7 @@ class InspectionProgram:
                 json.dump(remnant_data, f, ensure_ascii=False, indent=4)
             self._log_event('REMNANT_CREATED', detail=remnant_data)
         except Exception as e:
-            messagebox.showerror("저장 실패", f"잔량 파일 저장 중 오류 발생: {e}")
+            if show_popup: messagebox.showerror("저장 실패", f"잔량 파일 저장 중 오류 발생: {e}")
             return
         
         try:
@@ -2024,9 +2054,10 @@ class InspectionProgram:
             if sys.platform == "win32":
                 os.startfile(image_path)
         except Exception as e:
-            messagebox.showwarning("이미지 생성 실패", f"라벨 이미지 생성에 실패했습니다: {e}")
+            if show_popup: messagebox.showwarning("이미지 생성 실패", f"라벨 이미지 생성에 실패했습니다: {e}")
 
-        messagebox.showinfo("생성 완료", f"잔량표 생성이 완료되었습니다.\n\n잔량 ID: {remnant_id}\n\n라벨 이미지가 '{self.labels_folder}' 폴더에 저장되었습니다.")
+        if show_popup:
+            messagebox.showinfo("생성 완료", f"잔량표 생성이 완료되었습니다.\n\n잔량 ID: {remnant_id}\n\n라벨 이미지가 '{self.labels_folder}' 폴더에 저장되었습니다.")
         
         self.toggle_remnant_mode()
 
@@ -2040,7 +2071,6 @@ class InspectionProgram:
         self.remnant_item_label.config(text="등록할 품목: (첫 제품 스캔 대기)")
         
     def _generate_remnant_label_image(self, remnant_id, item_code, item_name, item_spec, quantity, worker_name, creation_date):
-        """요청된 디자인으로 잔량표 이미지를 생성합니다. (가독성 및 유지보수성 개선 버전)"""
         config = {
             'size': (800, 400), 'bg_color': "white", 'text_color': "black", 'padding': 30,
             'font_path': "C:/Windows/Fonts/malgun.ttf",
@@ -2065,7 +2095,7 @@ class InspectionProgram:
 
         qr_data = json.dumps({'id': remnant_id, 'code': item_code, 'qty': quantity})
         qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L,
-                            box_size=config['qr_code']['box_size'], border=config['qr_code']['border'])
+                                     box_size=config['qr_code']['box_size'], border=config['qr_code']['border'])
         qr.add_data(qr_data)
         qr.make(fit=True)
         qr_img = qr.make_image(fill_color=config['text_color'], back_color=config['bg_color']).resize((config['qr_code']['size'], config['qr_code']['size']))
@@ -2088,7 +2118,7 @@ class InspectionProgram:
             info_items = [
                 {'label': "품 목 명", 'value': f": {item_name}"},
                 {'label': "품목코드", 'value': f": {item_code}"},
-                {'label': "규      격", 'value': f": {item_spec}"},
+                {'label': "규     격", 'value': f": {item_spec}"},
             ]
             y_pos = start_y + config['layout']['content_top_margin']
             x_header, x_value = config['layout']['table_header_x'], config['layout']['table_value_x']
@@ -2098,7 +2128,7 @@ class InspectionProgram:
                 draw_obj.text((x_value, y_pos), item['value'], font=fonts['body'], fill=config['text_color'])
                 y_pos += config['layout']['table_line_height']
                 
-            draw_obj.text((x_header, y_pos), "수      량", font=fonts['header'], fill=config['text_color'])
+            draw_obj.text((x_header, y_pos), "수     량", font=fonts['header'], fill=config['text_color'])
             draw_obj.text((x_value, y_pos - 10), ": ", font=fonts['quantity'], fill=config['text_color'])
             qty_text = str(quantity)
             colon_w = draw_obj.textlength(": ", font=fonts['quantity'])
