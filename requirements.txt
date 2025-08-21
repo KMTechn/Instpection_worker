@@ -2,3 +2,4 @@ requests
 pygame
 keyboard
 Pillow
+qrcode
