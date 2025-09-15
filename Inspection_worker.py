@@ -36,7 +36,7 @@ except ImportError:
 
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Instpection_worker"
-CURRENT_VERSION = "v2.0.8" # 버전은 예시입니다.
+CURRENT_VERSION = "v2.0.6" # 버전은 예시입니다.
 
 def check_for_updates(app_instance):
     """GitHub에서 최신 릴리스를 확인합니다."""
