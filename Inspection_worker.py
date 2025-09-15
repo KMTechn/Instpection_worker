@@ -52,7 +52,10 @@ def check_for_updates(app_instance):
             for asset in latest_release_data['assets']:
                 if asset['name'].endswith('.zip'):
                     return asset['browser_download_url'], latest_version
-            return None, None
+        
+        # [FIXED] 버전이 동일하거나 .zip 파일이 없을 때 None, None을 반환하여 오류 수정
+        return None, None
+        
     except requests.exceptions.RequestException as e:
         print(f"업데이트 확인 중 오류: {e}")
         return None, None
