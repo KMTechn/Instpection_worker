@@ -36,7 +36,7 @@ except ImportError:
 
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Instpection_worker"
-CURRENT_VERSION = "v2.0.5"
+CURRENT_VERSION = "v2.0.7" # 버전은 예시입니다.
 
 def check_for_updates(app_instance):
     """GitHub에서 최신 릴리스를 확인합니다."""
@@ -168,7 +168,6 @@ class InspectionSession:
     is_partial_submission: bool = False
     is_restored_session: bool = False
     is_remnant_session: bool = False
-    # [변경됨] 사용된 잔량표 ID를 기록하기 위한 필드 추가
     consumed_remnant_ids: List[str] = field(default_factory=list)
 
 @dataclass
@@ -729,6 +728,7 @@ class InspectionProgram:
             self.paned_window.sashpos(1, sash_1_pos)
         except tk.TclError: pass
 
+    # [수정된 부분]
     def _create_left_sidebar_content(self, parent_frame):
         parent_frame.grid_columnconfigure(0, weight=1)
         parent_frame.grid_rowconfigure(1, weight=1)
@@ -764,15 +764,18 @@ class InspectionProgram:
         self.good_summary_tree.heading('item_code', text='품목코드')
         self.good_summary_tree.heading('count', text='완료 수량 (파렛트)')
         
-        self.good_summary_tree.column('item_name_spec', minwidth=100, anchor='w', stretch=tk.YES)
-        self.good_summary_tree.column('item_code', minwidth=100, anchor='w', stretch=tk.YES)
-        self.good_summary_tree.column('count', minwidth=100, anchor='center', stretch=tk.YES)
+        # [수정됨] 컬럼의 너비와 stretch 옵션을 제거하여 동적 조정 로직에 위임
+        self.good_summary_tree.column('item_name_spec', anchor='w')
+        self.good_summary_tree.column('item_code', anchor='center')
+        self.good_summary_tree.column('count', anchor='center')
         
         self.good_summary_tree.grid(row=0, column=0, sticky='nsew')
         good_scrollbar = ttk.Scrollbar(good_tree_frame, orient='vertical', command=self.good_summary_tree.yview)
         self.good_summary_tree['yscrollcommand'] = good_scrollbar.set
         good_scrollbar.grid(row=0, column=1, sticky='ns')
-        self.good_summary_tree.bind('<ButtonRelease-1>', lambda e: self._on_column_resize(e, self.good_summary_tree, 'good_summary'))
+
+        # [수정됨] Treeview의 크기가 변경될 때마다 컬럼 너비를 재조정하도록 바인딩
+        self.good_summary_tree.bind('<Configure>', lambda e, t=self.good_summary_tree: self._adjust_treeview_columns(t))
 
         ttk.Label(summary_container, text="불량 현황", style='Subtle.TLabel', font=(self.DEFAULT_FONT, int(13 * self.scale_factor), 'bold')).grid(row=2, column=0, sticky='w', pady=(10, 5))
         defect_tree_frame = ttk.Frame(summary_container, style='Sidebar.TFrame')
@@ -785,15 +788,39 @@ class InspectionProgram:
         self.defect_summary_tree.heading('item_code', text='품목코드')
         self.defect_summary_tree.heading('count', text='불량 수량 (개)')
 
-        self.defect_summary_tree.column('item_name_spec', minwidth=100, anchor='w', stretch=tk.YES)
-        self.defect_summary_tree.column('item_code', minwidth=100, anchor='w', stretch=tk.YES)
-        self.defect_summary_tree.column('count', minwidth=100, anchor='center', stretch=tk.YES)
+        # [수정됨] 컬럼의 너비와 stretch 옵션을 제거하여 동적 조정 로직에 위임
+        self.defect_summary_tree.column('item_name_spec', anchor='w')
+        self.defect_summary_tree.column('item_code', anchor='center')
+        self.defect_summary_tree.column('count', anchor='center')
 
         self.defect_summary_tree.grid(row=0, column=0, sticky='nsew')
         defect_scrollbar = ttk.Scrollbar(defect_tree_frame, orient='vertical', command=self.defect_summary_tree.yview)
         self.defect_summary_tree['yscrollcommand'] = defect_scrollbar.set
         defect_scrollbar.grid(row=0, column=1, sticky='ns')
-        self.defect_summary_tree.bind('<ButtonRelease-1>', lambda e: self._on_column_resize(e, self.defect_summary_tree, 'defect_summary'))
+
+        # [수정됨] Treeview의 크기가 변경될 때마다 컬럼 너비를 재조정하도록 바인딩
+        self.defect_summary_tree.bind('<Configure>', lambda e, t=self.defect_summary_tree: self._adjust_treeview_columns(t))
+
+    # [신규 추가] Treeview 컬럼 너비를 동적으로 조정하는 함수
+    def _adjust_treeview_columns(self, treeview: ttk.Treeview):
+        """Treeview의 컬럼 너비를 사용 가능한 공간에 맞춰 균등하게 조정합니다."""
+        cols = treeview['columns']
+        if not cols:
+            return
+        
+        width = treeview.winfo_width()
+        # 스크롤바가 보일 경우를 대비해 약간의 여유 공간을 둡니다.
+        if width > 30:
+            width -= 20 
+        
+        col_width = width // len(cols)
+        
+        for col in cols:
+            treeview.column(col, width=col_width, stretch=tk.NO, anchor='center')
+        
+        # 첫번째 컬럼(품목명)은 텍스트가 길 수 있으므로 anchor를 w(west)로 별도 지정
+        if 'item_name_spec' in cols:
+            treeview.column('item_name_spec', anchor='w')
 
     def _create_center_content(self, parent_frame):
         parent_frame.grid_columnconfigure(0, weight=1)
@@ -1249,7 +1276,7 @@ class InspectionProgram:
 
     def _generate_test_master_label(self, item_code: str, quantity: int = 10) -> str:
         now = datetime.datetime.now()
-        return f"WID=TEST-WID-{now.strftime('%H%M%S')}|CLC={item_code}|QT={quantity}|FPB=TEST-FPB|OBD={now.strftime('%Y%m%d')}|PHS={now.hour}|SPC=TEST-SPC|IG=TEST-IG"
+        return f"WID=TEST-WID-{now.strftime('%H%M%S%f')}|CLC={item_code}|QT={quantity}|FPB=TEST-FPB|OBD={now.strftime('%Y%m%d')}|PHS={now.hour}|SPC=TEST-SPC|IG=TEST-IG"
     
     def _generate_rework_test_logs(self, count: int):
         self.root.after(0, lambda: self.show_status_message(f"리워크 테스트 로그 {count}개 생성 중...", self.COLOR_REWORK, duration=10000))
@@ -1326,6 +1353,10 @@ class InspectionProgram:
     def _complete_session_logic_only(self, session: InspectionSession):
         is_test = session.is_test_tray
         
+        # [개선됨] 세션 완료 시 완료된 라벨 목록에 추가
+        if session.master_label_code:
+            self.completed_master_labels.add(session.master_label_code)
+
         log_detail = {
             'master_label_code': session.master_label_code, 'item_code': session.item_code,
             'item_name': session.item_name, 'item_spec': session.item_spec,
@@ -1472,11 +1503,13 @@ class InspectionProgram:
                 self.record_inspection_result(barcode, status)
         else:
             if is_master_label_format:
+                # [수정됨] 제출 되돌리기 기능 적용
                 if parsed_data and barcode in self.completed_master_labels:
-                    self.show_fullscreen_warning("작업 중복", f"이미 완료된 현품표입니다.\n\n{barcode}", self.COLOR_DEFECT)
-                    self._log_event('SCAN_FAIL_DUPLICATE_MASTER', detail={'barcode': barcode})
+                    # 사용자에게 작업 재개 여부 확인
+                    if messagebox.askyesno("작업 재개 확인", "이미 제출된 작업입니다.\n이어서 진행하시겠습니까?"):
+                        self._resume_submitted_session(barcode)
                     return
-                
+
                 item_info = parsed_data if parsed_data else {'CLC': barcode}
                 item_code_from_label = item_info.get('CLC')
                 matched_item = next((item for item in self.items_data if item['Item Code'] == item_code_from_label), None)
@@ -1620,7 +1653,7 @@ class InspectionProgram:
     def complete_session(self):
         session_to_complete = self.current_session
         
-        # [변경됨] 세션을 초기화하기 전에, 사용된 잔량표 파일들을 삭제
+        # 사용된 잔량표 파일들을 삭제
         if session_to_complete.consumed_remnant_ids:
             self._log_event('REMNANT_FILES_DELETION_START', detail={'ids': session_to_complete.consumed_remnant_ids})
             for remnant_id in session_to_complete.consumed_remnant_ids:
@@ -1713,7 +1746,81 @@ class InspectionProgram:
             self.current_session.is_partial_submission = True
             self.complete_session()
         self._schedule_focus_return()
-    
+
+    # #[신규 추가] 제출된 세션을 되돌리는 전체 프로세스를 담당하는 함수
+    def _resume_submitted_session(self, master_label_code: str):
+        """실수로 제출된 세션을 로그 파일에서 찾아 복원합니다."""
+        
+        # 1. 로그 파일에서 마지막 제출 기록 찾기
+        log_details = self._find_last_tray_complete_log(master_label_code)
+
+        if not log_details:
+            messagebox.showerror("복원 실패", "이전 작업 기록을 로그 파일에서 찾을 수 없습니다.")
+            return
+
+        try:
+            # 2. 세션 객체 복원
+            restored_session = InspectionSession()
+            restored_session.master_label_code = log_details.get('master_label_code', '')
+            restored_session.item_code = log_details.get('item_code', '')
+            restored_session.item_name = log_details.get('item_name', '')
+            restored_session.item_spec = log_details.get('item_spec', '')
+            restored_session.quantity = int(log_details.get('tray_capacity', self.TRAY_SIZE))
+            restored_session.stopwatch_seconds = float(log_details.get('work_time_sec', 0.0))
+            
+            # 바코드 목록으로부터 good_items, defective_items 복원
+            good_barcodes = log_details.get('scanned_product_barcodes', [])
+            defective_barcodes = log_details.get('defective_product_barcodes', [])
+            
+            restored_session.good_items = [{'barcode': bc, 'timestamp': datetime.datetime.now().isoformat(), 'status': 'Good'} for bc in good_barcodes]
+            restored_session.defective_items = [{'barcode': bc, 'timestamp': datetime.datetime.now().isoformat(), 'status': 'Defective'} for bc in defective_barcodes]
+            restored_session.scanned_barcodes = good_barcodes + defective_barcodes
+
+            # 3. 현재 세션을 복원된 세션으로 교체
+            self.current_session = restored_session
+            
+            # 4. 완료 목록에서 제거 및 로그 기록
+            if master_label_code in self.completed_master_labels:
+                self.completed_master_labels.remove(master_label_code)
+            self._log_event('TRAY_RESUMED', detail={'master_label_code': master_label_code})
+
+            # 5. UI 업데이트 및 상태 동기화
+            self.show_status_message("이전 작업을 복원했습니다. 이어서 진행하세요.", self.COLOR_SUCCESS)
+            self._update_current_item_label()
+            self._redraw_scan_trees()
+            self._update_center_display()
+            self._start_stopwatch(resume=True)
+            self.undo_button.config(state=tk.NORMAL if self.current_session.scanned_barcodes else tk.DISABLED)
+            self._save_current_session_state()
+
+        except Exception as e:
+            messagebox.showerror("복원 오류", f"작업 복원 중 오류가 발생했습니다.\n{e}")
+            self._log_event('TRAY_RESUME_FAILED', detail={'error': str(e)})
+
+
+    # #[신규 추가] 로그 파일에서 특정 현품표의 마지막 완료 기록을 찾는 함수
+    def _find_last_tray_complete_log(self, master_label_code: str) -> Optional[Dict[str, Any]]:
+        """로그 파일에서 특정 master_label_code의 마지막 TRAY_COMPLETE 이벤트를 찾습니다."""
+        if not self.log_file_path or not os.path.exists(self.log_file_path):
+            return None
+        
+        last_match = None
+        try:
+            with open(self.log_file_path, 'r', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+                all_rows = list(reader) # 모든 로그를 메모리에 로드
+                # 역순으로 탐색하여 가장 최신 로그를 찾음
+                for row in reversed(all_rows):
+                    if row.get('event') == 'TRAY_COMPLETE':
+                        details = json.loads(row.get('details', '{}'))
+                        if details.get('master_label_code') == master_label_code:
+                            last_match = details
+                            break # 찾으면 즉시 중단
+            return last_match
+        except (IOError, json.JSONDecodeError, KeyError) as e:
+            print(f"로그 파일 검색 오류: {e}")
+            return None
+
     def _add_remnant_to_current_session(self, remnant_id: str):
         remnant_filepath = os.path.join(self.remnants_folder, f"{remnant_id}.json")
         if not os.path.exists(remnant_filepath):
@@ -1745,33 +1852,28 @@ class InspectionProgram:
                         if remaining_items:
                             self._create_new_remnant_from_list(remaining_items, remnant_data)
                         
-                        # [변경됨] 파일 삭제 대신 ID 기록
                         self.current_session.consumed_remnant_ids.append(remnant_id)
-                        self.show_status_message(f"잔량 {len(items)}개 추가 완료.", self.COLOR_SUCCESS)
+                        # self.show_status_message(f"잔량 {len(items)}개 추가 완료.", self.COLOR_SUCCESS)
                         return
 
                     barcode = items[index]
                     self.record_inspection_result(barcode, 'Good')
                     self.root.after(50, add_items_sequentially, items, index + 1)
 
-                self.show_status_message(f"자동 테스트: 잔량 {len(items_to_add)}개를 추가합니다...", self.COLOR_SPARE)
+                # self.show_status_message(f"자동 테스트: 잔량 {len(items_to_add)}개를 추가합니다...", self.COLOR_SPARE)
                 add_items_sequentially(items_to_add)
                 return
             
-            # [변경됨] 수동 작업 시나리오 분기
             remnant_quantity = len(remnant_barcodes)
             if remnant_quantity <= space_available:
-                # Case 1: 잔량이 남은 공간보다 적거나 같을 때 (단순 추가)
                 if messagebox.askyesno("잔량 추가", f"잔량 {remnant_quantity}개를 현재 작업에 추가하시겠습니까?"):
                     for barcode in remnant_barcodes:
                         self.record_inspection_result(barcode, 'Good')
                     
-                    # [변경됨] 파일 삭제 대신 ID 기록
                     self.current_session.consumed_remnant_ids.append(remnant_id)
                     self._log_event('REMNANT_CONSUMED', detail={'remnant_id': remnant_id})
                     self.show_status_message(f"잔량 {remnant_quantity}개가 추가되었습니다.", self.COLOR_SUCCESS)
             else:
-                # Case 2: 잔량이 남은 공간보다 많을 때 (초과분 처리 필요)
                 items_to_leave = remnant_quantity - space_available
                 self._prompt_remnant_fill_method(space_available, items_to_leave, remnant_id, remnant_data)
 
@@ -1914,13 +2016,15 @@ class InspectionProgram:
                 worker_name=self.worker_name,
                 creation_date=now.strftime('%Y-%m-%d %H:%M:%S')
             )
-            if sys.platform == "win32":
+            if sys.platform == "win32" and not self.is_auto_testing: # 자동 테스트 중에는 파일 열지 않음
                 os.startfile(image_path)
             
-            messagebox.showinfo("초과분 잔량 생성 완료", f"현품표 작업을 완료하고 남은 {len(barcodes)}개의 제품으로\n새로운 잔량표를 생성했습니다.\n\n신규 잔량 ID: {new_remnant_id}")
+            if not self.is_auto_testing:
+                messagebox.showinfo("초과분 잔량 생성 완료", f"현품표 작업을 완료하고 남은 {len(barcodes)}개의 제품으로\n새로운 잔량표를 생성했습니다.\n\n신규 잔량 ID: {new_remnant_id}")
 
         except Exception as e:
-            messagebox.showwarning("이미지 생성 실패", f"새 잔량 라벨 이미지 생성에 실패했습니다: {e}")
+            if not self.is_auto_testing:
+                messagebox.showwarning("이미지 생성 실패", f"새 잔량 라벨 이미지 생성에 실패했습니다: {e}")
 
     def _update_remnant_list(self):
         for i in self.remnant_items_tree.get_children():
@@ -2008,13 +2112,14 @@ class InspectionProgram:
             for name, size in config['font_sizes'].items():
                 fonts[name] = ImageFont.truetype(config['font_path'], size)
         except IOError:
-            messagebox.showwarning("폰트 오류", f"{config['font_path']} 폰트를 찾을 수 없습니다. 기본 폰트로 생성합니다.")
+            if not self.is_auto_testing:
+                messagebox.showwarning("폰트 오류", f"{config['font_path']} 폰트를 찾을 수 없습니다. 기본 폰트로 생성합니다.")
             for name in config['font_sizes']:
                 fonts[name] = ImageFont.load_default()
 
         qr_data = json.dumps({'id': remnant_id, 'code': item_code, 'qty': quantity})
         qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L,
-                                        box_size=config['qr_code']['box_size'], border=config['qr_code']['border'])
+                                         box_size=config['qr_code']['box_size'], border=config['qr_code']['border'])
         qr.add_data(qr_data)
         qr.make(fit=True)
         qr_img = qr.make_image(fill_color=config['text_color'], back_color=config['bg_color']).resize((config['qr_code']['size'], config['qr_code']['size']))
@@ -2473,151 +2578,170 @@ class InspectionProgram:
             info = data[key]
             tree.insert('', 'end', values=(obd, phs, item_code, info['item_name'], info['count']))
             
+    # #[개선됨] 안정성을 높인 새로운 자동 테스트 함수
     def _automated_test_sequence(self, test_item_code: str, num_good: int, num_defect: int, num_pallets: int, num_reworks: int, num_remnants: int):
         self.is_auto_testing = True
         self.is_simulating_defect_press = False
         original_title = self.root.title()
         self.root.after(0, lambda: self.root.title(f"{original_title} (자동 테스트 실행 중...)"))
 
-        # 테스트 중 생성된 정보를 담을 변수
+        # 테스트 중 생성/사용되는 데이터를 관리
         captured_remnant_info = {}
+        generated_defects_for_rework = []
+        original_askyesno = messagebox.askyesno 
 
         try:
-            # --- 헬퍼 함수 ---
+            # --- 헬퍼 함수: 테스트 안정성을 위해 상태를 직접 확인 ---
+            def wait_for_state(condition_func, description, timeout=15):
+                """특정 조건이 충족될 때까지 대기하는 함수"""
+                start_time = time.monotonic()
+                while not condition_func():
+                    time.sleep(0.1) # UI 이벤트 루프가 작동할 시간을 줌
+                    if time.monotonic() - start_time > timeout:
+                        raise TimeoutError(f"'{description}' 상태 대기 시간 초과 (timeout: {timeout}s)")
+
             def simulate_scan(barcode_to_scan: str, target_entry: tk.Entry):
+                """스캔 입력을 시뮬레이션하고 UI가 처리할 시간을 줌"""
                 self.root.after(0, target_entry.delete, 0, tk.END)
-                self.root.after(10, lambda: target_entry.insert(0, barcode_to_scan))
-                self.root.after(20, target_entry.event_generate, '<Return>')
-                time.sleep(0.1)
+                self.root.after(1, lambda: target_entry.insert(0, barcode_to_scan))
+                self.root.after(2, target_entry.event_generate, '<Return>')
+                time.sleep(0.05 + self.scan_delay_sec.get()) # 최소 딜레이 + 설정 딜레이
 
-            def create_remnant_and_store_id():
-                remnant_id = self._generate_remnant_label(show_popup=False)
-                if remnant_id:
-                    captured_remnant_info['id'] = remnant_id
-                    captured_remnant_info['count'] = len(self.current_remnant_session.scanned_barcodes)
-
-            # --- 0. 테스트 시작 안내 ---
+            # --- STEP 0: 테스트 시작 안내 ---
             self.root.after(0, lambda: messagebox.showinfo("테스트 시작",
                 f"자동 시뮬레이션 테스트를 시작합니다.\n\n"
                 f"· 검사: {num_pallets}회\n· 리워크: {num_reworks}개\n"
-                f"· 잔량생성: {num_remnants}개\n· 잔량불러오기: 1회"))
+                f"· 잔량생성: {num_remnants}개\n· 잔량사용: 1회\n"
+                f"· 제출 되돌리기: 1회"))
             time.sleep(1)
 
-            # --- 1. 검사 시뮬레이션 (첫 팔레트) ---
-            generated_defects = []
+            # --- STEP 1: 표준 검사 시뮬레이션 (첫번째 파렛트) ---
             if num_pallets > 0:
-                self.root.after(0, lambda: self.show_status_message(f"테스트: 팔레트 1/{num_pallets} 검사 중...", self.COLOR_PRIMARY, 5000))
-                master_label = self._generate_test_master_label(test_item_code, quantity=num_good)
-                simulate_scan(master_label, self.scan_entry_inspection)
-                
-                wait_start_session = time.monotonic()
-                while not self.current_session.master_label_code:
-                    time.sleep(0.1)
-                    if time.monotonic() - wait_start_session > 5: raise TimeoutError("세션 시작 대기 시간 초과")
+                self.root.after(0, self.show_status_message, f"테스트 1/{num_pallets}: 표준 검사", self.COLOR_PRIMARY, 5000)
+                master_label_1 = self._generate_test_master_label(test_item_code, quantity=num_good)
+                simulate_scan(master_label_1, self.scan_entry_inspection)
+                wait_for_state(lambda: self.current_session.master_label_code, "세션 시작")
                 self.current_session.is_test_tray = True
-                time.sleep(0.5)
 
                 items_to_scan = ([f"TEST-DEFECT-P1-{j}" for j in range(num_defect)] + [f"TEST-GOOD-P1-{j}" for j in range(num_good)])
                 random.shuffle(items_to_scan)
-                generated_defects = [b for b in items_to_scan if "DEFECT" in b]
+                generated_defects_for_rework = [b for b in items_to_scan if "DEFECT" in b]
 
                 for item_barcode_base in items_to_scan:
                     full_barcode = f"{item_barcode_base}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
-                    is_defect = "DEFECT" in full_barcode
-                    if is_defect:
+                    if "DEFECT" in full_barcode:
                         self.is_simulating_defect_press = True
                         self.root.after(0, self.on_pedal_press_ui_feedback)
-                        time.sleep(0.1)
                     
                     simulate_scan(full_barcode, self.scan_entry_inspection)
                     
-                    if is_defect:
-                        time.sleep(0.1)
+                    if "DEFECT" in full_barcode:
                         self.is_simulating_defect_press = False
                         self.root.after(0, self.on_pedal_release_ui_feedback)
-                    time.sleep(self.scan_delay_sec.get())
+                
+                wait_for_state(lambda: not self.current_session.master_label_code, "첫 파렛트 완료")
+                self.root.after(0, self.show_status_message, "테스트: 표준 검사 완료", self.COLOR_SUCCESS)
 
-                wait_start = time.monotonic()
-                while self.current_session.master_label_code:
-                    time.sleep(0.1)
-                    if time.monotonic() - wait_start > 10: raise TimeoutError("팔레트 완료 처리 대기 시간 초과")
-                self.root.after(0, lambda: self.show_status_message("테스트: 팔레트 1 검사 완료", self.COLOR_SUCCESS))
-                time.sleep(1)
-
-            # --- 2. 리워크 시뮬레이션 ---
-            if num_reworks > 0 and generated_defects:
+            # --- STEP 2: 리워크 시뮬레이션 ---
+            if num_reworks > 0 and generated_defects_for_rework:
+                self.root.after(0, self.show_status_message, f"테스트: 리워크 작업 ({num_reworks}개)", self.COLOR_REWORK, 5000)
                 self.root.after(0, self.toggle_rework_mode)
-                self.root.after(0, lambda: self.show_status_message(f"테스트: 리워크 작업({num_reworks}개)", self.COLOR_REWORK, 5000))
-                time.sleep(1)
-                reworks_to_do = min(num_reworks, len(generated_defects))
+                wait_for_state(lambda: self.current_mode == 'rework', "리워크 모드 전환")
+
+                reworks_to_do = min(num_reworks, len(generated_defects_for_rework))
                 for i in range(reworks_to_do):
-                    rework_barcode = f"{generated_defects[i]}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
+                    rework_barcode = f"{generated_defects_for_rework[i]}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
                     simulate_scan(rework_barcode, self.scan_entry_rework)
-                    time.sleep(self.scan_delay_sec.get())
+                
                 self.root.after(0, self.toggle_rework_mode)
-                self.root.after(0, lambda: self.show_status_message("테스트: 리워크 작업 완료", self.COLOR_SUCCESS))
-                time.sleep(1)
+                wait_for_state(lambda: self.current_mode == 'standard', "검사 모드 복귀")
+                self.root.after(0, self.show_status_message, "테스트: 리워크 작업 완료", self.COLOR_SUCCESS)
 
-            # --- 3. 잔량 생성 시뮬레이션 ---
+            # --- STEP 3: 잔량 생성 시뮬레이션 ---
             if num_remnants > 0:
+                self.root.after(0, self.show_status_message, f"테스트: 잔량 등록 ({num_remnants}개)", self.COLOR_SPARE, 5000)
                 self.root.after(0, self.toggle_remnant_mode)
-                self.root.after(0, lambda: self.show_status_message(f"테스트: 잔량 등록({num_remnants}개)", self.COLOR_SPARE, 5000))
-                time.sleep(1)
-                
-                remnant_item_info = next((it for it in self.items_data if it.get('Item Code') == test_item_code), self.items_data[0])
-                
+                wait_for_state(lambda: self.current_mode == 'remnant', "잔량 모드 전환")
+
                 for i in range(num_remnants):
                     remnant_barcode = f"TEST-REMNANT-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
                     simulate_scan(remnant_barcode, self.scan_entry_remnant)
-                    time.sleep(self.scan_delay_sec.get())
-                
-                self.root.after(0, create_remnant_and_store_id)
-                time.sleep(1.5) 
 
-            # --- 4. 잔량표 불러오기 테스트 ---
+                def create_remnant_and_store_id():
+                    remnant_id = self._generate_remnant_label(show_popup=False)
+                    if remnant_id:
+                        captured_remnant_info['id'] = remnant_id
+                        captured_remnant_info['count'] = num_remnants
+                self.root.after(0, create_remnant_and_store_id)
+                wait_for_state(lambda: self.current_mode == 'standard', "잔량 생성 후 검사 모드 복귀")
+                self.root.after(0, self.show_status_message, "테스트: 잔량 등록 완료", self.COLOR_SUCCESS)
+
+            # --- STEP 4: 잔량 사용 시뮬레이션 (두번째 파렛트) ---
             if captured_remnant_info:
-                self.root.after(0, lambda: self.show_status_message("테스트: 잔량 불러오기 시작...", self.COLOR_PRIMARY, 5000))
-                
+                self.root.after(0, self.show_status_message, "테스트: 잔량 사용 시작", self.COLOR_PRIMARY, 5000)
                 new_pallet_qty = captured_remnant_info['count'] + 5
                 master_label_2 = self._generate_test_master_label(test_item_code, quantity=new_pallet_qty)
                 simulate_scan(master_label_2, self.scan_entry_inspection)
-                
-                wait_start_session = time.monotonic()
-                while not self.current_session.master_label_code:
-                    time.sleep(0.1)
-                    if time.monotonic() - wait_start_session > 5: raise TimeoutError("두 번째 팔레트 세션 시작 대기 시간 초과")
+                wait_for_state(lambda: self.current_session.master_label_code, "두번째 파렛트 세션 시작")
                 self.current_session.is_test_tray = True
-                time.sleep(0.5)
-
+                
                 simulate_scan(captured_remnant_info['id'], self.scan_entry_inspection)
-                time.sleep(1 + (0.05 * captured_remnant_info['count']))
+                wait_for_state(lambda: len(self.current_session.scanned_barcodes) >= captured_remnant_info['count'], "잔량 아이템 추가")
 
                 for i in range(5):
                     final_barcode = f"FINAL-GOOD-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
                     simulate_scan(final_barcode, self.scan_entry_inspection)
-                    time.sleep(self.scan_delay_sec.get())
-                
-                wait_start = time.monotonic()
-                while self.current_session.master_label_code:
-                    time.sleep(0.1)
-                    if time.monotonic() - wait_start > 10: raise TimeoutError("두 번째 팔레트 완료 처리 대기 시간 초과")
-                self.root.after(0, lambda: self.show_status_message("테스트: 잔량 불러오기 및 완료 성공", self.COLOR_SUCCESS))
-                time.sleep(1)
 
-            # --- 5. 테스트 성공 알림 ---
-            self.root.after(0, lambda: messagebox.showinfo("테스트 완료", "자동 시뮬레이션 테스트가 성공적으로 완료되었습니다."))
+                wait_for_state(lambda: not self.current_session.master_label_code, "두번째 파렛트 완료")
+                self.root.after(0, self.show_status_message, "테스트: 잔량 사용 완료", self.COLOR_SUCCESS)
+
+            # --- STEP 5: 제출 되돌리기 시뮬레이션 (세번째 파렛트) ---
+            self.root.after(0, self.show_status_message, "테스트: 제출 되돌리기 시작", self.COLOR_PRIMARY, 5000)
+            resume_qty = 10
+            master_label_3 = self._generate_test_master_label(test_item_code, quantity=resume_qty)
+            simulate_scan(master_label_3, self.scan_entry_inspection)
+            wait_for_state(lambda: self.current_session.master_label_code, "세번째 파렛트 세션 시작")
+            self.current_session.is_test_tray = True
+            
+            # 일부만 스캔
+            for i in range(3):
+                simulate_scan(f"RESUME-ITEM-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}", self.scan_entry_inspection)
+            
+            # 강제 제출
+            self.root.after(0, lambda: (
+                setattr(self.current_session, 'is_partial_submission', True),
+                self.complete_session()
+            ))
+            wait_for_state(lambda: not self.current_session.master_label_code, "강제 제출 완료")
+            self.root.after(0, self.show_status_message, "테스트: 작업 일부 진행 후 강제 제출 완료", self.COLOR_IDLE)
+            time.sleep(0.5)
+
+            # 되돌리기 시도 (messagebox.askyesno를 임시로 변경하여 자동 'Yes' 응답)
+            messagebox.askyesno = lambda title, message: True
+            self.root.after(0, self.show_status_message, "테스트: 동일 라벨 재스캔하여 복원 시도", self.COLOR_PRIMARY, 5000)
+            simulate_scan(master_label_3, self.scan_entry_inspection)
+            wait_for_state(lambda: self.current_session.master_label_code and len(self.current_session.scanned_barcodes) == 3, "세션 복원 확인")
+            
+            # 나머지 스캔
+            self.root.after(0, self.show_status_message, "테스트: 세션 복원됨. 나머지 작업 진행", self.COLOR_SUCCESS)
+            for i in range(3, resume_qty):
+                simulate_scan(f"RESUME-ITEM-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}", self.scan_entry_inspection)
+
+            wait_for_state(lambda: not self.current_session.master_label_code, "세번째 파렛트 최종 완료")
+            self.root.after(0, self.show_status_message, "테스트: 제출 되돌리기 및 재작업 완료", self.COLOR_SUCCESS)
 
         except Exception as e:
-            self.root.after(0, lambda err=e: messagebox.showerror("테스트 오류", f"자동 테스트 중 오류가 발생했습니다:\n{err}"))
+            self.root.after(0, lambda err=e: messagebox.showerror("테스트 오류", f"자동 테스트 중 오류가 발생했습니다:\n{type(err).__name__}: {err}"))
         finally:
-            # --- 6. 정리 작업 ---
+            # --- STEP 6: 정리 작업 ---
+            messagebox.askyesno = original_askyesno # 원래 함수로 복원
             self.is_auto_testing = False
             self.is_simulating_defect_press = False
             self.root.after(0, self.on_pedal_release_ui_feedback)
             self.root.after(0, lambda: self.root.title(original_title))
             self.root.after(0, self._update_all_summaries)
             self.root.after(0, self._schedule_focus_return)
-            self.root.after(0, self._reset_status_message)
+            self.root.after(0, lambda: messagebox.showinfo("테스트 완료", "자동 시뮬레이션 테스트가 모두 완료되었습니다."))
 
 
 if __name__ == "__main__":
