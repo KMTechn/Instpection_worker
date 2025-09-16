@@ -308,7 +308,10 @@ class InspectionProgram:
         
         self.is_auto_testing_defect = False
         self.is_auto_testing = False
-
+        
+        self.master_label_replace_state: Optional[str] = None # 'awaiting_old_completed', 'awaiting_new_replacement'
+        self.replacement_target_label: Optional[str] = None
+        
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def on_pedal_press_ui_feedback(self, event=None):
@@ -731,7 +734,6 @@ class InspectionProgram:
             self.paned_window.sashpos(1, sash_1_pos)
         except tk.TclError: pass
 
-    # [수정된 부분]
     def _create_left_sidebar_content(self, parent_frame):
         parent_frame.grid_columnconfigure(0, weight=1)
         parent_frame.grid_rowconfigure(1, weight=1)
@@ -767,7 +769,6 @@ class InspectionProgram:
         self.good_summary_tree.heading('item_code', text='품목코드')
         self.good_summary_tree.heading('count', text='완료 수량 (파렛트)')
         
-        # [수정됨] 컬럼의 너비와 stretch 옵션을 제거하여 동적 조정 로직에 위임
         self.good_summary_tree.column('item_name_spec', anchor='w')
         self.good_summary_tree.column('item_code', anchor='center')
         self.good_summary_tree.column('count', anchor='center')
@@ -777,7 +778,6 @@ class InspectionProgram:
         self.good_summary_tree['yscrollcommand'] = good_scrollbar.set
         good_scrollbar.grid(row=0, column=1, sticky='ns')
 
-        # [수정됨] Treeview의 크기가 변경될 때마다 컬럼 너비를 재조정하도록 바인딩
         self.good_summary_tree.bind('<Configure>', lambda e, t=self.good_summary_tree: self._adjust_treeview_columns(t))
 
         ttk.Label(summary_container, text="불량 현황", style='Subtle.TLabel', font=(self.DEFAULT_FONT, int(13 * self.scale_factor), 'bold')).grid(row=2, column=0, sticky='w', pady=(10, 5))
@@ -791,7 +791,6 @@ class InspectionProgram:
         self.defect_summary_tree.heading('item_code', text='품목코드')
         self.defect_summary_tree.heading('count', text='불량 수량 (개)')
 
-        # [수정됨] 컬럼의 너비와 stretch 옵션을 제거하여 동적 조정 로직에 위임
         self.defect_summary_tree.column('item_name_spec', anchor='w')
         self.defect_summary_tree.column('item_code', anchor='center')
         self.defect_summary_tree.column('count', anchor='center')
@@ -801,10 +800,8 @@ class InspectionProgram:
         self.defect_summary_tree['yscrollcommand'] = defect_scrollbar.set
         defect_scrollbar.grid(row=0, column=1, sticky='ns')
 
-        # [수정됨] Treeview의 크기가 변경될 때마다 컬럼 너비를 재조정하도록 바인딩
         self.defect_summary_tree.bind('<Configure>', lambda e, t=self.defect_summary_tree: self._adjust_treeview_columns(t))
 
-    # [신규 추가] Treeview 컬럼 너비를 동적으로 조정하는 함수
     def _adjust_treeview_columns(self, treeview: ttk.Treeview):
         """Treeview의 컬럼 너비를 사용 가능한 공간에 맞춰 균등하게 조정합니다."""
         cols = treeview['columns']
@@ -918,6 +915,10 @@ class InspectionProgram:
         self.reset_button.pack(side=tk.LEFT, padx=10)
         self.undo_button = ttk.Button(self.button_frame, text="↩️ 마지막 판정 취소", command=self.undo_last_inspection, state=tk.DISABLED)
         self.undo_button.pack(side=tk.LEFT, padx=10)
+        
+        self.replace_master_label_button = ttk.Button(self.button_frame, text="🔄 완료 현품표 교체", command=self.initiate_master_label_replacement)
+        self.replace_master_label_button.pack(side=tk.LEFT, padx=10)
+
         self.submit_tray_button = ttk.Button(self.button_frame, text="✅ 현재 트레이 제출", command=self.submit_current_tray)
         self.submit_tray_button.pack(side=tk.LEFT, padx=10)
 
@@ -1137,7 +1138,13 @@ class InspectionProgram:
         if not (hasattr(self, 'current_item_label') and self.current_item_label.winfo_exists()): return
         text, color = "", self.COLOR_TEXT
 
-        if self.current_mode == "rework":
+        if self.master_label_replace_state == 'awaiting_old_completed':
+            text = "완료된 현품표 교체: 교체할 기존 현품표를 스캔하세요."
+            color = self.COLOR_PRIMARY
+        elif self.master_label_replace_state == 'awaiting_new_replacement':
+            text = "완료된 현품표 교체: 적용할 새로운 현품표를 스캔하세요."
+            color = self.COLOR_SUCCESS
+        elif self.current_mode == "rework":
             text = f"♻️ 리워크 모드: 성공적으로 수리된 제품의 바코드를 스캔하세요."
             color = self.COLOR_REWORK
         elif self.current_mode == "remnant":
@@ -1239,8 +1246,8 @@ class InspectionProgram:
                 total_generated_defects = num_defect * num_pallets
                 if total_generated_defects < num_reworks:
                     messagebox.showwarning("설정 오류", 
-                                        f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
-                                        parent=popup)
+                                           f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
+                                           parent=popup)
                     return None
                 return num_good, num_defect, num_pallets, num_reworks, num_remnants
             except (ValueError, TypeError) as e:
@@ -1356,7 +1363,6 @@ class InspectionProgram:
     def _complete_session_logic_only(self, session: InspectionSession):
         is_test = session.is_test_tray
         
-        # [개선됨] 세션 완료 시 완료된 라벨 목록에 추가
         if session.master_label_code:
             self.completed_master_labels.add(session.master_label_code)
 
@@ -1394,6 +1400,10 @@ class InspectionProgram:
         self._process_scan_logic(raw_barcode)
 
     def _process_scan_logic(self, raw_barcode: str):
+        if self.master_label_replace_state:
+            self._handle_historical_replacement_scan(raw_barcode)
+            return
+
         current_time = time.monotonic()
         if current_time - self.last_scan_time < self.scan_delay_sec.get():
             return
@@ -1506,9 +1516,7 @@ class InspectionProgram:
                 self.record_inspection_result(barcode, status)
         else:
             if is_master_label_format:
-                # [수정됨] 제출 되돌리기 기능 적용
                 if parsed_data and barcode in self.completed_master_labels:
-                    # 사용자에게 작업 재개 여부 확인
                     if messagebox.askyesno("작업 재개 확인", "이미 제출된 작업입니다.\n이어서 진행하시겠습니까?"):
                         self._resume_submitted_session(barcode)
                     return
@@ -1656,7 +1664,6 @@ class InspectionProgram:
     def complete_session(self):
         session_to_complete = self.current_session
         
-        # 사용된 잔량표 파일들을 삭제
         if session_to_complete.consumed_remnant_ids:
             self._log_event('REMNANT_FILES_DELETION_START', detail={'ids': session_to_complete.consumed_remnant_ids})
             for remnant_id in session_to_complete.consumed_remnant_ids:
@@ -1750,11 +1757,9 @@ class InspectionProgram:
             self.complete_session()
         self._schedule_focus_return()
 
-    # #[신규 추가] 제출된 세션을 되돌리는 전체 프로세스를 담당하는 함수
     def _resume_submitted_session(self, master_label_code: str):
         """실수로 제출된 세션을 로그 파일에서 찾아 복원합니다."""
         
-        # 1. 로그 파일에서 마지막 제출 기록 찾기
         log_details = self._find_last_tray_complete_log(master_label_code)
 
         if not log_details:
@@ -1762,7 +1767,6 @@ class InspectionProgram:
             return
 
         try:
-            # 2. 세션 객체 복원
             restored_session = InspectionSession()
             restored_session.master_label_code = log_details.get('master_label_code', '')
             restored_session.item_code = log_details.get('item_code', '')
@@ -1771,7 +1775,6 @@ class InspectionProgram:
             restored_session.quantity = int(log_details.get('tray_capacity', self.TRAY_SIZE))
             restored_session.stopwatch_seconds = float(log_details.get('work_time_sec', 0.0))
             
-            # 바코드 목록으로부터 good_items, defective_items 복원
             good_barcodes = log_details.get('scanned_product_barcodes', [])
             defective_barcodes = log_details.get('defective_product_barcodes', [])
             
@@ -1779,15 +1782,12 @@ class InspectionProgram:
             restored_session.defective_items = [{'barcode': bc, 'timestamp': datetime.datetime.now().isoformat(), 'status': 'Defective'} for bc in defective_barcodes]
             restored_session.scanned_barcodes = good_barcodes + defective_barcodes
 
-            # 3. 현재 세션을 복원된 세션으로 교체
             self.current_session = restored_session
             
-            # 4. 완료 목록에서 제거 및 로그 기록
             if master_label_code in self.completed_master_labels:
                 self.completed_master_labels.remove(master_label_code)
             self._log_event('TRAY_RESUMED', detail={'master_label_code': master_label_code})
 
-            # 5. UI 업데이트 및 상태 동기화
             self.show_status_message("이전 작업을 복원했습니다. 이어서 진행하세요.", self.COLOR_SUCCESS)
             self._update_current_item_label()
             self._redraw_scan_trees()
@@ -1801,7 +1801,6 @@ class InspectionProgram:
             self._log_event('TRAY_RESUME_FAILED', detail={'error': str(e)})
 
 
-    # #[신규 추가] 로그 파일에서 특정 현품표의 마지막 완료 기록을 찾는 함수
     def _find_last_tray_complete_log(self, master_label_code: str) -> Optional[Dict[str, Any]]:
         """로그 파일에서 특정 master_label_code의 마지막 TRAY_COMPLETE 이벤트를 찾습니다."""
         if not self.log_file_path or not os.path.exists(self.log_file_path):
@@ -1811,14 +1810,13 @@ class InspectionProgram:
         try:
             with open(self.log_file_path, 'r', encoding='utf-8-sig') as f:
                 reader = csv.DictReader(f)
-                all_rows = list(reader) # 모든 로그를 메모리에 로드
-                # 역순으로 탐색하여 가장 최신 로그를 찾음
+                all_rows = list(reader)
                 for row in reversed(all_rows):
                     if row.get('event') == 'TRAY_COMPLETE':
                         details = json.loads(row.get('details', '{}'))
                         if details.get('master_label_code') == master_label_code:
                             last_match = details
-                            break # 찾으면 즉시 중단
+                            break
             return last_match
         except (IOError, json.JSONDecodeError, KeyError) as e:
             print(f"로그 파일 검색 오류: {e}")
@@ -1845,7 +1843,6 @@ class InspectionProgram:
                 self.show_status_message("이미 목표 수량을 모두 채웠습니다.", self.COLOR_IDLE)
                 return
 
-            # 자동 테스트 중일 때는 팝업 없이 바로 추가
             if self.is_auto_testing:
                 items_to_add = remnant_barcodes[:space_available]
                 remaining_items = remnant_barcodes[space_available:]
@@ -1856,14 +1853,12 @@ class InspectionProgram:
                             self._create_new_remnant_from_list(remaining_items, remnant_data)
                         
                         self.current_session.consumed_remnant_ids.append(remnant_id)
-                        # self.show_status_message(f"잔량 {len(items)}개 추가 완료.", self.COLOR_SUCCESS)
                         return
 
                     barcode = items[index]
                     self.record_inspection_result(barcode, 'Good')
                     self.root.after(50, add_items_sequentially, items, index + 1)
 
-                # self.show_status_message(f"자동 테스트: 잔량 {len(items_to_add)}개를 추가합니다...", self.COLOR_SPARE)
                 add_items_sequentially(items_to_add)
                 return
             
@@ -2019,7 +2014,7 @@ class InspectionProgram:
                 worker_name=self.worker_name,
                 creation_date=now.strftime('%Y-%m-%d %H:%M:%S')
             )
-            if sys.platform == "win32" and not self.is_auto_testing: # 자동 테스트 중에는 파일 열지 않음
+            if sys.platform == "win32" and not self.is_auto_testing:
                 os.startfile(image_path)
             
             if not self.is_auto_testing:
@@ -2095,7 +2090,7 @@ class InspectionProgram:
         self.current_remnant_session = RemnantCreationSession()
         self._update_remnant_list()
         self.remnant_item_label.config(text="등록할 품목: (첫 제품 스캔 대기)")
-        
+    
     def _generate_remnant_label_image(self, remnant_id, item_code, item_name, item_spec, quantity, worker_name, creation_date):
         config = {
             'size': (800, 400), 'bg_color': "white", 'text_color': "black", 'padding': 30,
@@ -2449,9 +2444,132 @@ class InspectionProgram:
         if hasattr(self, 'status_label') and self.status_label.winfo_exists():
             self.status_label['text'], self.status_label['fg'] = "준비", self.COLOR_TEXT
             
+    # ===================================================================
+    # 현품표 교체 (완료된 작업 대상) 관련 신규/수정된 함수들
+    # ===================================================================
+
+    def initiate_master_label_replacement(self):
+        """완료된 현품표를 교체하는 프로세스를 시작합니다."""
+        if self.current_session.master_label_code:
+            messagebox.showwarning("작업 중 오류", "진행 중인 작업이 있을 때는 현품표를 교체할 수 없습니다.\n작업을 먼저 완료하거나 리셋해주세요.")
+            return
+
+        if self.master_label_replace_state:
+            self.cancel_master_label_replacement()
+        else:
+            self.master_label_replace_state = 'awaiting_old_completed'
+            self._log_event('HISTORICAL_REPLACE_START')
+            self.show_status_message("교체할 '완료된' 현품표를 스캔하세요.", self.COLOR_PRIMARY)
+            self._update_current_item_label()
+            self._schedule_focus_return()
+
+    def cancel_master_label_replacement(self):
+        """현품표 교체 프로세스를 취소합니다."""
+        if self.master_label_replace_state:
+            self.master_label_replace_state = None
+            self.replacement_target_label = None
+            self._log_event('HISTORICAL_REPLACE_CANCEL')
+            self.show_status_message("현품표 교체가 취소되었습니다.", self.COLOR_TEXT_SUBTLE)
+            self._update_current_item_label()
+
+    def _handle_historical_replacement_scan(self, barcode: str):
+        """완료된 현품표 교체 중의 스캔 입력을 처리합니다."""
+        if self.master_label_replace_state == 'awaiting_old_completed':
+            self.replacement_target_label = barcode
+            self.master_label_replace_state = 'awaiting_new_replacement'
+            self.show_status_message("확인. 적용할 '새로운' 현품표를 스캔하세요.", self.COLOR_SUCCESS)
+            self._update_current_item_label()
+
+        elif self.master_label_replace_state == 'awaiting_new_replacement':
+            new_data = self._parse_new_format_qr(barcode)
+            if not new_data:
+                self.show_fullscreen_warning("스캔 오류", "유효한 현품표 QR 형식이 아닙니다.", self.COLOR_DEFECT)
+                self.cancel_master_label_replacement()
+                return
+
+            if barcode == self.replacement_target_label:
+                self.show_fullscreen_warning("스캔 오류", "기존과 동일한 현품표입니다. 다른 현품표를 스캔해주세요.", self.COLOR_DEFECT)
+                return
+
+            self._perform_historical_master_label_swap(self.replacement_target_label, barcode, new_data)
+            self.cancel_master_label_replacement() # 상태 초기화
+
+    def _perform_historical_master_label_swap(self, old_label: str, new_label: str, new_data: Dict[str, str]):
+        """로그 파일에서 이전 현품표 기록을 찾아 새 현품표 정보로 교체합니다."""
+        if not self.log_file_path or not os.path.exists(self.log_file_path):
+            messagebox.showerror("파일 오류", f"오늘 날짜의 로그 파일({os.path.basename(self.log_file_path)})이 없습니다.")
+            return
+
+        try:
+            with open(self.log_file_path, 'r', newline='', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+                all_rows = list(reader)
+                if not reader.fieldnames: # 파일이 비어있는 경우
+                    messagebox.showwarning("기록 없음", f"오늘 로그에서 해당 현품표({old_label})로 완료된 기록을 찾을 수 없습니다.")
+                    return
+                headers = reader.fieldnames
+        except Exception as e:
+            messagebox.showerror("파일 읽기 오류", f"로그 파일을 읽는 중 오류가 발생했습니다: {e}")
+            return
+        
+        found_and_replaced = False
+        for row in reversed(all_rows):
+            if row.get('event') == 'TRAY_COMPLETE':
+                details_str = row.get('details', '{}')
+                try:
+                    details = json.loads(details_str)
+                    if details.get('master_label_code') == old_label:
+                        # --- 유효성 검사 ---
+                        old_details_data = self._parse_new_format_qr(details.get('master_label_code', ''))
+                        old_qty = old_details_data.get('QT', -1) if old_details_data else -1
+                        new_qty = new_data.get('QT', -2)
+                        
+                        if old_qty != new_qty:
+                            messagebox.showerror("수량 불일치", f"완료된 작업의 현품표 교체 시 수량은 변경할 수 없습니다.\n(기존: {old_qty}개, 신규: {new_qty}개)")
+                            return
+                        
+                        # --- 데이터 교체 ---
+                        details['master_label_code'] = new_label
+                        details['phs'] = new_data.get('PHS', details.get('phs'))
+                        details['outbound_date'] = new_data.get('OBD', details.get('outbound_date'))
+                        
+                        row['details'] = json.dumps(details, ensure_ascii=False)
+                        found_and_replaced = True
+                        break # 첫 번째(가장 최신) 일치 항목만 교체하고 중단
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+
+        if not found_and_replaced:
+            messagebox.showwarning("기록 없음", f"오늘 로그에서 해당 현품표({old_label})로 완료된 기록을 찾을 수 없습니다.")
+            return
+
+        try:
+            with open(self.log_file_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(all_rows)
+            
+            log_details = {
+                'old_master_label': old_label,
+                'new_master_label': new_label,
+                'modified_log_file': os.path.basename(self.log_file_path)
+            }
+            self._log_event('HISTORICAL_REPLACE_SUCCESS', detail=log_details)
+            
+            messagebox.showinfo("교체 완료", "지정한 현품표 정보가 로그 파일에서 성공적으로 교체되었습니다.")
+            
+            self._load_session_state()
+            self._update_all_summaries()
+
+        except Exception as e:
+            messagebox.showerror("파일 쓰기 오류", f"수정된 로그를 저장하는 중 오류가 발생했습니다: {e}")
+
     def run(self):
         self.root.mainloop()
 
+    # ===================================================================
+    # 완료 현황 보기 관련 함수들
+    # ===================================================================
     def show_completion_summary_window(self):
         summary_win = tk.Toplevel(self.root)
         summary_win.title("작업 완료 현황")
@@ -2581,7 +2699,7 @@ class InspectionProgram:
             info = data[key]
             tree.insert('', 'end', values=(obd, phs, item_code, info['item_name'], info['count']))
             
-    # #[개선됨] 안정성을 높인 새로운 자동 테스트 함수
+    # #[수정됨] 현품표 교체 테스트가 추가된 자동 테스트 함수
     def _automated_test_sequence(self, test_item_code: str, num_good: int, num_defect: int, num_pallets: int, num_reworks: int, num_remnants: int):
         self.is_auto_testing = True
         self.is_simulating_defect_press = False
@@ -2589,9 +2707,15 @@ class InspectionProgram:
         self.root.after(0, lambda: self.root.title(f"{original_title} (자동 테스트 실행 중...)"))
 
         # 테스트 중 생성/사용되는 데이터를 관리
+        master_label_1 = ""
         captured_remnant_info = {}
         generated_defects_for_rework = []
-        original_askyesno = messagebox.askyesno 
+        
+        # 테스트 중단 방지를 위해 messagebox 함수 임시 변경
+        original_askyesno = messagebox.askyesno
+        original_showinfo = messagebox.showinfo
+        messagebox.showinfo = lambda title, message: print(f"AUTOTEST INFO: {title} - {message}")
+
 
         try:
             # --- 헬퍼 함수: 테스트 안정성을 위해 상태를 직접 확인 ---
@@ -2613,8 +2737,11 @@ class InspectionProgram:
             # --- STEP 0: 테스트 시작 안내 ---
             self.root.after(0, lambda: messagebox.showinfo("테스트 시작",
                 f"자동 시뮬레이션 테스트를 시작합니다.\n\n"
-                f"· 검사: {num_pallets}회\n· 리워크: {num_reworks}개\n"
-                f"· 잔량생성: {num_remnants}개\n· 잔량사용: 1회\n"
+                f"· 검사: {num_pallets}회\n"
+                f"· 현품표 교체: 1회\n"
+                f"· 리워크: {num_reworks}개\n"
+                f"· 잔량생성: {num_remnants}개\n"
+                f"· 잔량사용: 1회\n"
                 f"· 제출 되돌리기: 1회"))
             time.sleep(1)
 
@@ -2623,11 +2750,12 @@ class InspectionProgram:
                 self.root.after(0, self.show_status_message, f"테스트 1/{num_pallets}: 표준 검사", self.COLOR_PRIMARY, 5000)
                 master_label_1 = self._generate_test_master_label(test_item_code, quantity=num_good)
                 simulate_scan(master_label_1, self.scan_entry_inspection)
-                wait_for_state(lambda: self.current_session.master_label_code, "세션 시작")
+                wait_for_state(lambda: self.current_session.master_label_code == master_label_1, "세션 시작")
                 self.current_session.is_test_tray = True
 
                 items_to_scan = ([f"TEST-DEFECT-P1-{j}" for j in range(num_defect)] + [f"TEST-GOOD-P1-{j}" for j in range(num_good)])
                 random.shuffle(items_to_scan)
+                # 리워크 테스트를 위해 불량 바코드 목록 저장
                 generated_defects_for_rework = [b for b in items_to_scan if "DEFECT" in b]
 
                 for item_barcode_base in items_to_scan:
@@ -2644,6 +2772,28 @@ class InspectionProgram:
                 
                 wait_for_state(lambda: not self.current_session.master_label_code, "첫 파렛트 완료")
                 self.root.after(0, self.show_status_message, "테스트: 표준 검사 완료", self.COLOR_SUCCESS)
+                time.sleep(0.5)
+
+            # --- STEP 1.5: 완료 현품표 교체 시뮬레이션 ---
+            if master_label_1:
+                self.root.after(0, self.show_status_message, "테스트: 완료 현품표 교체 시작", self.COLOR_PRIMARY, 5000)
+                # 교체할 새 현품표 생성 (수량은 동일해야 함)
+                new_master_label = self._generate_test_master_label(test_item_code, quantity=num_good)
+
+                # 1. 교체 프로세스 시작
+                self.root.after(0, self.initiate_master_label_replacement)
+                wait_for_state(lambda: self.master_label_replace_state == 'awaiting_old_completed', "현품표 교체 모드 진입")
+
+                # 2. 교체 대상이 될 '기존' 현품표 스캔
+                simulate_scan(master_label_1, self.scan_entry_inspection)
+                wait_for_state(lambda: self.master_label_replace_state == 'awaiting_new_replacement', "기존 현품표 스캔 완료")
+
+                # 3. 적용할 '신규' 현품표 스캔
+                simulate_scan(new_master_label, self.scan_entry_inspection)
+                wait_for_state(lambda: self.master_label_replace_state is None, "신규 현품표 스캔 및 교체 완료")
+                
+                self.root.after(0, self.show_status_message, "테스트: 완료 현품표 교체 성공", self.COLOR_SUCCESS)
+                time.sleep(0.5)
 
             # --- STEP 2: 리워크 시뮬레이션 ---
             if num_reworks > 0 and generated_defects_for_rework:
@@ -2653,6 +2803,7 @@ class InspectionProgram:
 
                 reworks_to_do = min(num_reworks, len(generated_defects_for_rework))
                 for i in range(reworks_to_do):
+                    # 실제 검사 시 생성되었던 불량 바코드와 동일한 형식으로 생성
                     rework_barcode = f"{generated_defects_for_rework[i]}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
                     simulate_scan(rework_barcode, self.scan_entry_rework)
                 
@@ -2738,13 +2889,14 @@ class InspectionProgram:
         finally:
             # --- STEP 6: 정리 작업 ---
             messagebox.askyesno = original_askyesno # 원래 함수로 복원
+            messagebox.showinfo = original_showinfo # 원래 함수로 복원
             self.is_auto_testing = False
             self.is_simulating_defect_press = False
             self.root.after(0, self.on_pedal_release_ui_feedback)
             self.root.after(0, lambda: self.root.title(original_title))
             self.root.after(0, self._update_all_summaries)
             self.root.after(0, self._schedule_focus_return)
-            self.root.after(0, lambda: messagebox.showinfo("테스트 완료", "자동 시뮬레이션 테스트가 모두 완료되었습니다."))
+            self.root.after(100, lambda: messagebox.showinfo("테스트 완료", "자동 시뮬레이션 테스트가 모두 완료되었습니다."))
 
 
 if __name__ == "__main__":
