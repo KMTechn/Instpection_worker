@@ -1256,8 +1256,8 @@ class InspectionProgram:
                 total_generated_defects = num_defect * num_pallets
                 if total_generated_defects < num_reworks:
                     messagebox.showwarning("설정 오류", 
-                                           f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
-                                           parent=popup)
+                                          f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
+                                          parent=popup)
                     return None
                 return num_good, num_defect, num_pallets, num_reworks, num_remnants
             except (ValueError, TypeError) as e:
@@ -2511,49 +2511,68 @@ class InspectionProgram:
             self._perform_historical_master_label_swap()
 
     def _perform_historical_master_label_swap(self):
-        """(4) 로그 파일을 읽고, 수량 비교 후 상태에 따라 다음 작업을 결정합니다."""
+        """(4) [수정] 모든 로컬 로그 파일을 검색하여 교체할 기록을 찾습니다."""
         old_label = self.replacement_context.get('old_label')
-        if not self.log_file_path or not os.path.exists(self.log_file_path):
-            messagebox.showerror("파일 오류", f"오늘 날짜의 로그 파일({os.path.basename(self.log_file_path)})이 없습니다.")
+        
+        # 1. C:\Sync 폴더의 모든 로그 파일 목록을 가져옵니다.
+        log_file_pattern = re.compile(r"검사작업이벤트로그_.*_(\d{8})\.csv")
+        try:
+            all_log_files = [os.path.join(self.save_folder, f) for f in os.listdir(self.save_folder) if log_file_pattern.match(f)]
+            # 최신 파일부터 검색하기 위해 역순으로 정렬합니다.
+            all_log_files.sort(reverse=True)
+        except FileNotFoundError:
+            messagebox.showerror("오류", f"로그 폴더 '{self.save_folder}'를 찾을 수 없습니다.")
             self.cancel_master_label_replacement()
             return
 
+        # 2. 각 로그 파일을 순회하며 old_label을 찾습니다.
+        found_log_info = None
+        for log_path in all_log_files:
+            found_log_info = self._find_log_in_file(log_path, old_label)
+            if found_log_info:
+                break # 기록을 찾았으면 검색을 중단합니다.
+        
+        # 3. 검색 결과에 따라 다음 단계를 진행합니다.
+        if found_log_info:
+            self.replacement_context.update(found_log_info) # 찾은 파일 경로, 내용 등을 컨텍스트에 추가
+            self._compare_quantities_and_proceed() # 수량 비교 및 추가/제외 스캔 단계로 이동
+        else:
+            messagebox.showwarning("기록 없음", f"모든 로컬 로그 파일에서 해당 현품표({old_label})의 완료 기록을 찾을 수 없습니다.")
+            self.cancel_master_label_replacement()
+    
+    def _find_log_in_file(self, file_path: str, old_label: str) -> Optional[Dict]:
+        """[신규] 지정된 파일에서 old_label에 해당하는 로그를 찾아 관련 정보를 반환합니다."""
         try:
-            with open(self.log_file_path, 'r', newline='', encoding='utf-8-sig') as f:
+            with open(file_path, 'r', newline='', encoding='utf-8-sig') as f:
                 reader = csv.DictReader(f)
                 all_rows = list(reader)
                 headers = reader.fieldnames
-            self.replacement_context['all_rows'] = all_rows
-            self.replacement_context['headers'] = headers
-        except Exception as e:
-            messagebox.showerror("파일 읽기 오류", f"로그 파일을 읽는 중 오류: {e}")
-            self.cancel_master_label_replacement()
-            return
-        
-        found_row_index = -1
-        original_details = {}
-        for i, row in reversed(list(enumerate(all_rows))):
-            if row.get('event') == 'TRAY_COMPLETE':
-                try:
+            
+            # 파일의 마지막부터 역순으로 검색하여 가장 최근 기록을 찾습니다.
+            for i, row in reversed(list(enumerate(all_rows))):
+                if row.get('event') == 'TRAY_COMPLETE':
                     details = json.loads(row.get('details', '{}'))
                     if details.get('master_label_code') == old_label:
-                        found_row_index = i
-                        original_details = details
-                        break
-                except (json.JSONDecodeError, AttributeError): continue
+                        # 찾았다면 파일 경로, 전체 내용, 헤더, 인덱스, 상세 정보를 반환합니다.
+                        return {
+                            'found_log_path': file_path,
+                            'all_rows': all_rows,
+                            'headers': headers,
+                            'found_row_index': i,
+                            'original_details': details
+                        }
+        except Exception as e:
+            print(f"로그 파일 '{os.path.basename(file_path)}' 검색 중 오류: {e}")
+        return None
+
+    def _compare_quantities_and_proceed(self):
+        """[신규] 수량을 비교하고 다음 단계를 결정하는 로직입니다."""
+        original_details = self.replacement_context['original_details']
         
-        if found_row_index == -1:
-            messagebox.showwarning("기록 없음", f"오늘 로그에서 해당 현품표({old_label})로 완료된 기록을 찾을 수 없습니다.")
-            self.cancel_master_label_replacement()
-            return
-
-        self.replacement_context['found_row_index'] = found_row_index
-        self.replacement_context['original_details'] = original_details
-
         old_details_data = self._parse_new_format_qr(original_details.get('master_label_code', ''))
         old_qty = int(old_details_data.get('QT', -1)) if old_details_data else len(original_details.get('scanned_product_barcodes', []))
         new_qty = int(self.replacement_context['new_data'].get('QT', -2))
-        
+
         self.replacement_context['old_qty'] = old_qty
         self.replacement_context['new_qty'] = new_qty
         
@@ -2564,7 +2583,7 @@ class InspectionProgram:
             self.replacement_context['additional_items'] = []
             self.master_label_replace_state = 'awaiting_additional_items'
             self._update_current_item_label()
-        else:
+        else: # new_qty < old_qty
             self.replacement_context['items_to_remove_count'] = old_qty - new_qty
             self.replacement_context['removed_items'] = []
             self.master_label_replace_state = 'awaiting_removed_items'
@@ -2607,11 +2626,12 @@ class InspectionProgram:
             self._update_current_item_label()
 
     def _finalize_replacement(self):
-        """(6) 모든 정보가 준비되면 최종적으로 로그 파일을 수정하고 저장하는 함수"""
+        """(6) [수정] 모든 정보가 준비되면 최종적으로 '찾았던' 로그 파일을 수정하고 저장합니다."""
         ctx = self.replacement_context
         idx = ctx['found_row_index']
         details = ctx['original_details']
         
+        # --- (기존의 details 딕셔너리 수정 로직은 동일합니다) ---
         details['master_label_code'] = ctx['new_label']
         details['phs'] = ctx['new_data'].get('PHS', details.get('phs'))
         details['outbound_date'] = ctx['new_data'].get('OBD', details.get('outbound_date'))
@@ -2628,12 +2648,15 @@ class InspectionProgram:
         
         ctx['all_rows'][idx]['details'] = json.dumps(details, ensure_ascii=False)
 
+        # --- (파일 저장 로직 수정) ---
         try:
-            with open(self.log_file_path, 'w', newline='', encoding='utf-8-sig') as f:
+            # 컨텍스트에 저장된 '찾았던 파일의 경로'에 수정된 전체 내용을 다시 씁니다.
+            with open(ctx['found_log_path'], 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.DictWriter(f, fieldnames=ctx['headers'])
                 writer.writeheader()
                 writer.writerows(ctx['all_rows'])
             
+            # 성공 처리
             log_details = {'old_master_label': ctx['old_label'], 'new_master_label': ctx['new_label']}
             self._log_event('HISTORICAL_REPLACE_SUCCESS', detail=log_details)
             messagebox.showinfo("교체 완료", "현품표 정보가 성공적으로 교체 및 수정되었습니다.")
