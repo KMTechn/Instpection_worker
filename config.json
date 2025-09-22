@@ -1,0 +1,34 @@
+{
+    "app": {
+        "name": "Inspection Worker",
+        "version": "v2.0.8",
+        "description": "품질 검사 시스템"
+    },
+    "github": {
+        "repo_owner": "KMTechn",
+        "repo_name": "Instpection_worker"
+    },
+    "inspection": {
+        "tray_size": 60,
+        "idle_threshold_sec": 420,
+        "item_code_length": 13,
+        "default_product_code": "",
+        "sound_enabled": true
+    },
+    "ui": {
+        "window_title": "KMTech 검사 시스템",
+        "window_geometry": "1400x800",
+        "theme": "default"
+    },
+    "logging": {
+        "enabled": true,
+        "log_file": "inspection_log.csv",
+        "session_file": "session_data.json",
+        "max_log_size": 1048576
+    },
+    "network": {
+        "update_check_timeout": 5,
+        "download_timeout": 120,
+        "auto_update_check": true
+    }
+}

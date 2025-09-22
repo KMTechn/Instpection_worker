@@ -10,6 +10,14 @@ import json
 import re
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
+
+# 분리된 모듈들 import
+from core.models import InspectionSession, RemnantCreationSession, DefectiveMergeSession
+from utils.file_handler import resource_path, find_file_in_subdirs, ensure_directory_exists, get_safe_filename
+from utils.logger import EventLogger
+from ui.base_ui import UIUtils, StyleManager
+from ui.components import ScannerInputComponent, ProgressDisplayComponent, DataDisplayComponent
+from utils.exceptions import InspectionError, ConfigurationError, FileHandlingError, BarcodeError, SessionError, ValidationError, NetworkError, UpdateError
 import queue
 import pygame
 import uuid
@@ -31,24 +39,131 @@ except ImportError:
     sys.exit()
 
 # #####################################################################
-# # 자동 업데이트 기능
+# # 설정 관리 클래스
 # #####################################################################
 
-REPO_OWNER = "KMTechn"
-REPO_NAME = "Instpection_worker"
-CURRENT_VERSION = "v2.0.8" # 버전은 예시입니다.
+class ConfigManager:
+    """애플리케이션 설정을 관리하는 클래스"""
+
+    def __init__(self, config_file: str = "config.json"):
+        self.config_file = config_file
+        self.config = self._load_config()
+
+    def _load_config(self) -> Dict[str, Any]:
+        """설정 파일을 로드합니다."""
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.join(script_dir, self.config_file)
+
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            else:
+                # 기본 설정 생성
+                return self._create_default_config()
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"설정 파일 로드 오류: {e}")
+            return self._create_default_config()
+
+    def _create_default_config(self) -> Dict[str, Any]:
+        """기본 설정을 생성합니다."""
+        default_config = {
+            "app": {
+                "name": "Inspection Worker",
+                "version": "v2.0.8",
+                "description": "품질 검사 시스템"
+            },
+            "github": {
+                "repo_owner": "KMTechn",
+                "repo_name": "Instpection_worker"
+            },
+            "inspection": {
+                "tray_size": 60,
+                "idle_threshold_sec": 420,
+                "item_code_length": 13,
+                "default_product_code": "",
+                "sound_enabled": True
+            },
+            "ui": {
+                "window_title": "KMTech 검사 시스템",
+                "window_geometry": "1400x800",
+                "theme": "default"
+            },
+            "logging": {
+                "enabled": True,
+                "log_file": "inspection_log.csv",
+                "session_file": "session_data.json",
+                "max_log_size": 1048576
+            },
+            "network": {
+                "update_check_timeout": 5,
+                "download_timeout": 120,
+                "auto_update_check": True
+            }
+        }
+        self.save_config(default_config)
+        return default_config
+
+    def get(self, key_path: str, default=None):
+        """점 표기법으로 설정값을 가져옵니다. 예: 'app.version'"""
+        keys = key_path.split('.')
+        value = self.config
+
+        try:
+            for key in keys:
+                value = value[key]
+            return value
+        except (KeyError, TypeError):
+            return default
+
+    def set(self, key_path: str, value):
+        """점 표기법으로 설정값을 설정합니다."""
+        keys = key_path.split('.')
+        config = self.config
+
+        for key in keys[:-1]:
+            if key not in config:
+                config[key] = {}
+            config = config[key]
+
+        config[keys[-1]] = value
+
+    def save_config(self, config_data=None):
+        """설정을 파일로 저장합니다."""
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.join(script_dir, self.config_file)
+
+            data = config_data if config_data is not None else self.config
+
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"설정 파일 저장 오류: {e}")
+
+# 전역 설정 매니저 인스턴스
+config = ConfigManager()
+
+# #####################################################################
+# # 자동 업데이트 기능
+# #####################################################################
 
 def check_for_updates(app_instance):
     """GitHub에서 최신 릴리스를 확인합니다."""
     try:
-        api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
-        response = requests.get(api_url, timeout=5)
+        repo_owner = config.get('github.repo_owner')
+        repo_name = config.get('github.repo_name')
+        current_version = config.get('app.version')
+        timeout = config.get('network.update_check_timeout', 5)
+
+        api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases/latest"
+        response = requests.get(api_url, timeout=timeout)
         response.raise_for_status()
         latest_release_data = response.json()
         latest_version = latest_release_data['tag_name']
 
-        if latest_version.strip().lower() != CURRENT_VERSION.strip().lower():
-            app_instance._log_event('UPDATE_CHECK_FOUND', detail={'current': CURRENT_VERSION, 'latest': latest_version})
+        if latest_version.strip().lower() != current_version.strip().lower():
+            app_instance._log_event('UPDATE_CHECK_FOUND', detail={'current': current_version, 'latest': latest_version})
             for asset in latest_release_data['assets']:
                 if asset['name'].endswith('.zip'):
                     return asset['browser_download_url'], latest_version
@@ -67,7 +182,8 @@ def download_and_apply_update(url, app_instance):
         temp_dir = os.environ.get("TEMP", "C:\\Temp")
         zip_path = os.path.join(temp_dir, "update.zip")
         
-        response = requests.get(url, stream=True, timeout=120)
+        download_timeout = config.get('network.download_timeout', 120)
+        response = requests.get(url, stream=True, timeout=download_timeout)
         response.raise_for_status()
         with open(zip_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
@@ -90,8 +206,22 @@ def download_and_apply_update(url, app_instance):
         if len(extracted_content) == 1 and os.path.isdir(os.path.join(temp_update_folder, extracted_content[0])):
                 new_program_folder_path = os.path.join(temp_update_folder, extracted_content[0])
                 
-        with open(updater_script_path, "w", encoding='utf-8') as bat_file:
-            bat_file.write(fr"""@echo off
+        # 보안: 경로 인젝션 방지를 위한 입력 검증
+        import shlex
+
+        # 경로 검증 및 이스케이프
+        safe_executable = shlex.quote(os.path.basename(sys.executable))
+        safe_new_path = shlex.quote(new_program_folder_path)
+        safe_app_path = shlex.quote(application_path)
+        safe_temp_folder = shlex.quote(temp_update_folder)
+        safe_restart_path = shlex.quote(os.path.join(application_path, os.path.basename(sys.executable)))
+
+        # 경로 유효성 검증
+        if not os.path.exists(new_program_folder_path) or not os.path.exists(application_path):
+            raise ValueError("Invalid update paths detected")
+
+        # 템플릿 기반 안전한 배치 파일 생성
+        batch_template = """@echo off
 chcp 65001 > nul
 echo.
 echo ==========================================================
@@ -100,13 +230,13 @@ echo ==========================================================
 echo.
 echo 잠시 후 프로그램이 자동으로 종료됩니다...
 timeout /t 3 /nobreak > nul
-taskkill /F /IM "{os.path.basename(sys.executable)}" > nul
+taskkill /F /IM {executable} > nul
 echo.
 echo 기존 파일을 백업하고 새 파일로 교체합니다...
-xcopy "{new_program_folder_path}" "{application_path}" /E /H /C /I /Y > nul
+xcopy {source_path} {dest_path} /E /H /C /I /Y > nul
 echo.
 echo 임시 업데이트 파일을 삭제합니다...
-rmdir /s /q "{temp_update_folder}"
+rmdir /s /q {temp_path}
 echo.
 echo ========================================
 echo  업데이트 완료!
@@ -114,9 +244,18 @@ echo ========================================
 echo.
 echo 3초 후에 프로그램을 다시 시작합니다.
 timeout /t 3 /nobreak > nul
-start "" "{os.path.join(application_path, os.path.basename(sys.executable))}"
+start "" {restart_path}
 del "%~f0"
-            """)
+"""
+
+        with open(updater_script_path, "w", encoding='utf-8') as bat_file:
+            bat_file.write(batch_template.format(
+                executable=safe_executable,
+                source_path=safe_new_path,
+                dest_path=safe_app_path,
+                temp_path=safe_temp_folder,
+                restart_path=safe_restart_path
+            ))
         
         subprocess.Popen(updater_script_path, creationflags=subprocess.CREATE_NEW_CONSOLE)
         sys.exit(0)
@@ -144,72 +283,15 @@ def check_and_apply_updates(app_instance):
 # # 데이터 클래스 및 유틸리티
 # #####################################################################
 
-@dataclass
-class InspectionSession:
-    """한 트레이의 '검사' 세션 데이터를 관리합니다."""
-    master_label_code: str = ""
-    item_code: str = ""
-    item_name: str = ""
-    item_spec: str = ""
-    phs: str = ""
-    work_order_id: str = ""
-    supplier_code: str = ""
-    finished_product_batch: str = ""
-    outbound_date: str = ""
-    item_group: str = ""
-    quantity: int = 60
-    good_items: List[Dict[str, Any]] = field(default_factory=list)
-    defective_items: List[Dict[str, Any]] = field(default_factory=list)
-    scanned_barcodes: List[str] = field(default_factory=list)
-    mismatch_error_count: int = 0
-    total_idle_seconds: float = 0.0
-    stopwatch_seconds: float = 0.0
-    start_time: Optional[datetime.datetime] = None
-    has_error_or_reset: bool = False
-    is_test_tray: bool = False
-    is_partial_submission: bool = False
-    is_restored_session: bool = False
-    is_remnant_session: bool = False
-    consumed_remnant_ids: List[str] = field(default_factory=list)
-
-@dataclass
-class RemnantCreationSession:
-    """잔량 생성을 위한 세션 데이터입니다."""
-    item_code: str = ""
-    item_name: str = ""
-    item_spec: str = ""
-    scanned_barcodes: List[str] = field(default_factory=list)
-
-@dataclass
-class DefectiveMergeSession:
-    """불량품 통합 처리를 위한 세션 데이터입니다."""
-    item_code: str = ""
-    item_name: str = ""
-    item_spec: str = ""
-    target_quantity: int = 60
-    scanned_defects: List[str] = field(default_factory=list)
-
-def resource_path(relative_path: str) -> str:
-    """ PyInstaller로 패키징했을 때의 리소스 경로를 가져옵니다. """
-    try:
-        base_path = sys._MEIPASS
-    except AttributeError:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, relative_path)
-
 # #####################################################################
 # # 메인 어플리케이션
 # #####################################################################
 
 class InspectionProgram:
     """품질 검사 작업을 위한 메인 GUI 어플리케이션 클래스입니다."""
-    APP_TITLE = f"품질 검사 시스템 ({CURRENT_VERSION})"
     DEFAULT_FONT = 'Malgun Gothic'
-    TRAY_SIZE = 60
     SETTINGS_DIR = 'config'
     SETTINGS_FILE = 'inspection_settings.json'
-    IDLE_THRESHOLD_SEC = 420
-    ITEM_CODE_LENGTH = 13
     DEFECT_PEDAL_KEY_NAME = 'F12'
 
     COLOR_BG = "#F5F7FA"
@@ -230,7 +312,9 @@ class InspectionProgram:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title(self.APP_TITLE)
+        # 설정에서 앱 제목 동적 생성
+        app_title = f"{config.get('ui.window_title', '품질 검사 시스템')} ({config.get('app.version', 'v2.0.8')})"
+        self.root.title(app_title)
         self.root.state('zoomed')
         self.root.configure(bg=self.COLOR_BG)
         
@@ -522,7 +606,8 @@ class InspectionProgram:
             ttk.Label(center_frame, image=self.logo_photo_ref, style='TLabel').pack(pady=(40, 20))
         except Exception as e: print(f"로고 로드 실패: {e}")
 
-        ttk.Label(center_frame, text=self.APP_TITLE, style='Title.TLabel').pack(pady=(20, 60))
+        app_title = f"{config.get('ui.window_title', '품질 검사 시스템')} ({config.get('app.version', 'v2.0.8')})"
+        ttk.Label(center_frame, text=app_title, style='Title.TLabel').pack(pady=(20, 60))
         ttk.Label(center_frame, text="작업자 이름", style='TLabel', font=(self.DEFAULT_FONT, int(12 * self.scale_factor))).pack(pady=(10, 5))
         self.worker_entry = tk.Entry(center_frame, width=25, font=(self.DEFAULT_FONT, int(18 * self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, justify='center', highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_PRIMARY, highlightthickness=2)
         self.worker_entry.pack(ipady=int(12 * self.scale_factor))
@@ -904,14 +989,16 @@ class InspectionProgram:
         self.inspection_view_frame.grid_columnconfigure(0, weight=1)
         self.inspection_view_frame.grid_rowconfigure(4, weight=1)
 
-        self.main_progress_bar = ttk.Progressbar(self.inspection_view_frame, orient='horizontal', mode='determinate', maximum=self.TRAY_SIZE, style='Main.Horizontal.TProgressbar')
+        tray_size = config.get('inspection.tray_size', 60)
+        self.main_progress_bar = ttk.Progressbar(self.inspection_view_frame, orient='horizontal', mode='determinate', maximum=tray_size, style='Main.Horizontal.TProgressbar')
         self.main_progress_bar.grid(row=0, column=0, sticky='ew', pady=(5, 20), padx=20)
         
         self.counter_frame = ttk.Frame(self.inspection_view_frame, style='TFrame')
         self.counter_frame.grid(row=1, column=0, pady=(0, 20))
         
         self.good_count_label = ttk.Label(self.counter_frame, text="양품: 0", style='TLabel', foreground=self.COLOR_SUCCESS, font=(self.DEFAULT_FONT, int(14 * self.scale_factor), 'bold'))
-        self.main_count_label = ttk.Label(self.counter_frame, text=f"0 / {self.TRAY_SIZE}", style='MainCounter.TLabel', anchor='center')
+        tray_size = config.get('inspection.tray_size', 60)
+        self.main_count_label = ttk.Label(self.counter_frame, text=f"0 / {tray_size}", style='MainCounter.TLabel', anchor='center')
         self.defect_count_label = ttk.Label(self.counter_frame, text="불량: 0", style='TLabel', foreground=self.COLOR_DEFECT, font=(self.DEFAULT_FONT, int(14 * self.scale_factor), 'bold'))
         
         self.good_count_label.pack(side=tk.LEFT, padx=20)
@@ -1095,7 +1182,8 @@ class InspectionProgram:
 
         ttk.Label(session_ctrl_frame, text="목표수량:", style='TLabel').grid(row=1, column=0, sticky='w', pady=5)
         self.defect_target_qty_spinbox = ttk.Spinbox(session_ctrl_frame, from_=1, to=200, increment=1, width=5)
-        self.defect_target_qty_spinbox.set(self.TRAY_SIZE)
+        tray_size = config.get('inspection.tray_size', 60)
+        self.defect_target_qty_spinbox.set(tray_size)
         self.defect_target_qty_spinbox.grid(row=1, column=1, sticky='w', pady=5)
 
         self.start_defect_merge_button = ttk.Button(session_ctrl_frame, text="불량 합치기 시작", command=self.start_defective_merge_session, state=tk.DISABLED)
@@ -1762,7 +1850,7 @@ class InspectionProgram:
         else:
             self.root.after(0, lambda: self.show_fullscreen_warning("오류", "품목 데이터(Item.csv)가 없어 테스트를 진행할 수 없습니다.", self.COLOR_DEFECT))
             return
-        tray_capacity = self.TRAY_SIZE
+        tray_capacity = config.get('inspection.tray_size', 60)
         num_pallets_to_create = (count + tray_capacity - 1) // tray_capacity
         items_to_generate = count
         for _ in range(num_pallets_to_create):
@@ -1919,9 +2007,10 @@ class InspectionProgram:
 
         is_master_label_format = False
         parsed_data = self._parse_new_format_qr(barcode)
+        item_code_length = config.get('inspection.item_code_length', 13)
         if parsed_data:
             is_master_label_format = True
-        elif len(barcode) == self.ITEM_CODE_LENGTH and any(item['Item Code'] == barcode for item in self.items_data):
+        elif len(barcode) == item_code_length and any(item['Item Code'] == barcode for item in self.items_data):
             is_master_label_format = True
 
         if self.current_session.master_label_code:
@@ -1935,8 +2024,9 @@ class InspectionProgram:
             else:
                 is_defect_scan = keyboard.is_pressed(self.DEFECT_PEDAL_KEY_NAME.lower()) or getattr(self, 'is_simulating_defect_press', False)
                 
-                if len(barcode) <= self.ITEM_CODE_LENGTH:
-                    self.show_fullscreen_warning("바코드 형식 오류", f"제품 바코드는 {self.ITEM_CODE_LENGTH}자리보다 길어야 합니다.", self.COLOR_DEFECT)
+                item_code_length = config.get('inspection.item_code_length', 13)
+                if len(barcode) <= item_code_length:
+                    self.show_fullscreen_warning("바코드 형식 오류", f"제품 바코드는 {item_code_length}자리보다 길어야 합니다.", self.COLOR_DEFECT)
                     return
                 if self.current_session.item_code not in barcode:
                     self.current_session.mismatch_error_count += 1
@@ -1976,11 +2066,13 @@ class InspectionProgram:
                 if parsed_data:
                     self.current_session.phs = parsed_data.get('PHS', '')
                     self.current_session.work_order_id = parsed_data.get('WID', '')
-                    try: self.current_session.quantity = int(parsed_data.get('QT', self.TRAY_SIZE))
-                    except (ValueError, TypeError): self.current_session.quantity = self.TRAY_SIZE
+                    tray_size = config.get('inspection.tray_size', 60)
+                    try: self.current_session.quantity = int(parsed_data.get('QT', tray_size))
+                    except (ValueError, TypeError): self.current_session.quantity = tray_size
                     self._log_event('MASTER_LABEL_SCANNED', detail=parsed_data)
                 else:
-                    self.current_session.quantity = self.TRAY_SIZE
+                    tray_size = config.get('inspection.tray_size', 60)
+                    self.current_session.quantity = tray_size
                     self._log_event('MASTER_LABEL_SCANNED', detail={'code': barcode, 'format': 'legacy'})
 
                 self._apply_mode_ui()
@@ -2000,7 +2092,8 @@ class InspectionProgram:
 
     def _process_remnant_scan(self, barcode: str):
         parsed_data = self._parse_new_format_qr(barcode)
-        if parsed_data or barcode.upper().startswith("SPARE-") or len(barcode) < self.ITEM_CODE_LENGTH:
+        item_code_length = config.get('inspection.item_code_length', 13)
+        if parsed_data or barcode.upper().startswith("SPARE-") or len(barcode) < item_code_length:
             self.show_fullscreen_warning("스캔 오류", "잔량 등록 모드에서는 제품 바코드만 스캔할 수 있습니다.", self.COLOR_DEFECT)
             return
 
@@ -2211,7 +2304,8 @@ class InspectionProgram:
             restored_session.item_code = log_details.get('item_code', '')
             restored_session.item_name = log_details.get('item_name', '')
             restored_session.item_spec = log_details.get('item_spec', '')
-            restored_session.quantity = int(log_details.get('tray_capacity', self.TRAY_SIZE))
+            tray_size = config.get('inspection.tray_size', 60)
+            restored_session.quantity = int(log_details.get('tray_capacity', tray_size))
             restored_session.stopwatch_seconds = float(log_details.get('work_time_sec', 0.0))
             
             good_barcodes = log_details.get('scanned_product_barcodes', [])
@@ -2683,7 +2777,8 @@ class InspectionProgram:
             self.defect_count_label['text'] = "불량: -"
             self.main_count_label.config(text="- / -")
             self.main_progress_bar.config(value=0)
-            self.main_progress_bar['maximum'] = self.TRAY_SIZE
+            tray_size = config.get('inspection.tray_size', 60)
+            self.main_progress_bar['maximum'] = tray_size
 
     def _update_clock(self):
         if not self.root.winfo_exists(): return
@@ -2734,7 +2829,8 @@ class InspectionProgram:
         if not self.root.winfo_exists() or self.is_idle or not is_active_session or not self.last_activity_time:
             self.idle_check_job = self.root.after(1000, self._check_for_idle)
             return
-        if (datetime.datetime.now() - self.last_activity_time).total_seconds() > self.IDLE_THRESHOLD_SEC:
+        idle_threshold = config.get('inspection.idle_threshold_sec', 420)
+        if (datetime.datetime.now() - self.last_activity_time).total_seconds() > idle_threshold:
             self.is_idle = True
             self._set_idle_style(is_idle=True)
             self._log_event('IDLE_START')
