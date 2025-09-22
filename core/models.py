@@ -49,5 +49,5 @@ class DefectiveMergeSession:
     item_code: str = ""
     item_name: str = ""
     item_spec: str = ""
-    target_quantity: int = 60
+    target_quantity: int = 48
     scanned_defects: List[str] = field(default_factory=list)

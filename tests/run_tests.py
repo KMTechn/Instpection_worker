@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from test_config import TestConfigManager
 from test_models import TestInspectionSession, TestRemnantCreationSession, TestDefectiveMergeSession
 from test_file_handler import TestFileHandler
+from test_defect_mode import TestDefectMode, TestDefectModeIntegration
+from test_integration import TestIntegration, TestSystemHealth
 
 
 def run_all_tests():
@@ -28,6 +30,14 @@ def run_all_tests():
 
     # 파일 핸들러 테스트 추가
     test_suite.addTest(unittest.makeSuite(TestFileHandler))
+
+    # 불량 모드 테스트 추가
+    test_suite.addTest(unittest.makeSuite(TestDefectMode))
+    test_suite.addTest(unittest.makeSuite(TestDefectModeIntegration))
+
+    # 통합 테스트 추가
+    test_suite.addTest(unittest.makeSuite(TestIntegration))
+    test_suite.addTest(unittest.makeSuite(TestSystemHealth))
 
     # 테스트 실행
     runner = unittest.TextTestRunner(verbosity=2)
@@ -47,9 +57,17 @@ def run_specific_test(test_name):
         suite.addTest(unittest.makeSuite(TestDefectiveMergeSession))
     elif test_name == "file_handler":
         suite = unittest.makeSuite(TestFileHandler)
+    elif test_name == "defect_mode" or test_name == "defect":
+        suite = unittest.TestSuite()
+        suite.addTest(unittest.makeSuite(TestDefectMode))
+        suite.addTest(unittest.makeSuite(TestDefectModeIntegration))
+    elif test_name == "integration" or test_name == "system":
+        suite = unittest.TestSuite()
+        suite.addTest(unittest.makeSuite(TestIntegration))
+        suite.addTest(unittest.makeSuite(TestSystemHealth))
     else:
         print(f"알 수 없는 테스트: {test_name}")
-        print("사용 가능한 테스트: config, models, file_handler")
+        print("사용 가능한 테스트: config, models, file_handler, defect_mode, integration")
         return None
 
     runner = unittest.TextTestRunner(verbosity=2)

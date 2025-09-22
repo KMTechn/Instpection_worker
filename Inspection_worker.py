@@ -642,7 +642,11 @@ class InspectionProgram:
     def _load_session_state(self):
         today = datetime.date.today()
         sanitized_name = re.sub(r'[\\/*?:"<>|]', "", self.worker_name)
-        
+
+        # 테스트 폴더 생성
+        self.test_folder = os.path.join(self.save_folder, "TEST")
+        ensure_directory_exists(self.test_folder)
+
         self.log_file_path = os.path.join(self.save_folder, f"검사작업이벤트로그_{sanitized_name}_{today.strftime('%Y%m%d')}.csv")
         if not os.path.exists(self.log_file_path):
             self._log_event('LOG_FILE_CREATED', detail={'path': self.log_file_path})
@@ -654,6 +658,11 @@ class InspectionProgram:
         self.defect_merge_log_file_path = os.path.join(self.save_folder, f"불량처리로그_{sanitized_name}_{today.strftime('%Y%m%d')}.csv")
         if not os.path.exists(self.defect_merge_log_file_path):
                 self._log_event('DEFECT_MERGE_LOG_FILE_CREATED', detail={'path': self.defect_merge_log_file_path})
+
+        # 테스트 전용 로그 파일 경로들
+        self.test_log_file_path = os.path.join(self.test_folder, f"TEST_검사작업이벤트로그_{sanitized_name}_{today.strftime('%Y%m%d')}.csv")
+        self.test_rework_log_file_path = os.path.join(self.test_folder, f"TEST_리워크작업이벤트로그_{sanitized_name}_{today.strftime('%Y%m%d')}.csv")
+        self.test_defect_merge_log_file_path = os.path.join(self.test_folder, f"TEST_불량처리로그_{sanitized_name}_{today.strftime('%Y%m%d')}.csv")
 
         self.total_tray_count = 0
         self.completed_tray_times = []
@@ -1182,8 +1191,8 @@ class InspectionProgram:
 
         ttk.Label(session_ctrl_frame, text="목표수량:", style='TLabel').grid(row=1, column=0, sticky='w', pady=5)
         self.defect_target_qty_spinbox = ttk.Spinbox(session_ctrl_frame, from_=1, to=200, increment=1, width=5)
-        tray_size = config.get('inspection.tray_size', 60)
-        self.defect_target_qty_spinbox.set(tray_size)
+        # 불량품 통합 모드 기본 목표 수량: 48개
+        self.defect_target_qty_spinbox.set(48)
         self.defect_target_qty_spinbox.grid(row=1, column=1, sticky='w', pady=5)
 
         self.start_defect_merge_button = ttk.Button(session_ctrl_frame, text="불량 합치기 시작", command=self.start_defective_merge_session, state=tk.DISABLED)
@@ -1208,6 +1217,7 @@ class InspectionProgram:
         bottom_button_frame.grid(row=3, column=0, sticky='e', pady=(10, 0))
         self.cancel_defect_merge_button = ttk.Button(bottom_button_frame, text="취소", command=self.cancel_defective_merge_session, state=tk.DISABLED)
         self.cancel_defect_merge_button.pack(side=tk.LEFT, padx=5)
+        # 불량표 수동 생성 버튼 (2번째 생성 시기)
         self.generate_defect_label_button = ttk.Button(bottom_button_frame, text="불량표 생성", command=self.generate_defective_label, state=tk.DISABLED)
         self.generate_defect_label_button.pack(side=tk.LEFT, padx=5)
 
@@ -1460,10 +1470,12 @@ class InspectionProgram:
             self.show_fullscreen_warning("오류", "먼저 처리할 품목을 선택하고 '불량 합치기 시작'을 눌러주세요.", self.COLOR_DEFECT)
             return
 
-        available_barcodes = self.available_defects.get(session.item_code, {}).get('barcodes', set())
-        if barcode not in available_barcodes:
-            self.show_fullscreen_warning("스캔 오류", "처리 가능 목록에 없는 불량품 바코드입니다.", self.COLOR_DEFECT)
-            return
+        # 테스트 모드가 아닐 때만 available_barcodes 검증
+        if not getattr(self, 'is_auto_testing', False):
+            available_barcodes = self.available_defects.get(session.item_code, {}).get('barcodes', set())
+            if barcode not in available_barcodes:
+                self.show_fullscreen_warning("스캔 오류", "처리 가능 목록에 없는 불량품 바코드입니다.", self.COLOR_DEFECT)
+                return
 
         if barcode in session.scanned_defects:
             self.show_fullscreen_warning("중복 스캔", "이미 이 상자에 추가된 불량품입니다.", self.COLOR_DEFECT)
@@ -1473,12 +1485,31 @@ class InspectionProgram:
         session.scanned_defects.append(barcode)
         self._update_defective_mode_ui()
 
+        # 불량표 자동 생성 조건: 목표 수량 달성 시
         if len(session.scanned_defects) >= session.target_quantity:
             self.show_status_message(f"목표 수량({session.target_quantity}개)에 도달했습니다. 불량표를 생성합니다.", self.COLOR_SUCCESS)
+            # 자동으로 불량표 생성 (1번째 생성 시기)
             self.generate_defective_label()
 
     def generate_defective_label(self):
-        """불량표를 생성하고 로그를 기록합니다."""
+        """불량표를 생성하고 로그를 기록합니다.
+
+        불량표 생성 시기:
+        1. 자동 생성: 불량품 통합 세션에서 목표 수량 달성 시 (len(scanned_defects) >= target_quantity)
+        2. 수동 생성: "불량표 생성" 버튼 클릭 시
+
+        생성 파일:
+        - 불량표 이미지: labels/불량표_DEFECT-YYYYMMDD-HHMMSSΜΜΜΜΜΜ.png
+        - 불량표 데이터: defects_data/YYYYMMDD/DEFECT-YYYYMMDD-HHMMSSΜΜΜΜΜΜ.json
+
+        저장 내용:
+        - defect_box_id: 불량상자 고유 ID
+        - creation_date: 생성일시 (ISO 형식)
+        - worker: 작업자명
+        - item_code, item_name, item_spec: 품목 정보
+        - quantity: 불량품 수량
+        - barcodes: 스캔된 불량품 바코드 목록
+        """
         session = self.current_defective_merge_session
         if not session.scanned_defects:
             messagebox.showwarning("오류", "스캔된 불량품이 없습니다.")
@@ -1497,10 +1528,12 @@ class InspectionProgram:
                 worker_name=self.worker_name,
                 creation_date=now.strftime('%Y-%m-%d %H:%M:%S')
             )
-            if sys.platform == "win32":
+            # 테스트 모드가 아닐 때만 파일 열기
+            if not getattr(self, 'is_auto_testing', False) and sys.platform == "win32":
                 os.startfile(image_path)
         except Exception as e:
-            messagebox.showerror("라벨 생성 오류", f"불량표 라벨 이미지 생성 중 오류가 발생했습니다: {e}")
+            if not getattr(self, 'is_auto_testing', False):
+                messagebox.showerror("라벨 생성 오류", f"불량표 라벨 이미지 생성 중 오류가 발생했습니다: {e}")
             return
 
         defect_data = {
@@ -1519,15 +1552,21 @@ class InspectionProgram:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(defect_data, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            messagebox.showerror("저장 오류", f"불량표 데이터 파일 저장 중 오류가 발생했습니다: {e}")
+            if not getattr(self, 'is_auto_testing', False):
+                messagebox.showerror("저장 오류", f"불량표 데이터 파일 저장 중 오류가 발생했습니다: {e}")
             return
 
         self._log_event('DEFECT_MERGE_COMPLETE', detail=defect_data)
 
-        messagebox.showinfo("생성 완료", f"불량표 생성이 완료되었습니다.\n\n불량상자 ID: {defect_box_id}")
+        # 테스트 모드가 아닐 때만 팝업 표시
+        if not getattr(self, 'is_auto_testing', False):
+            messagebox.showinfo("생성 완료", f"불량표 생성이 완료되었습니다.\n\n불량상자 ID: {defect_box_id}")
 
         self.cancel_defective_merge_session()
         self.load_all_defective_items()
+
+        # 불량표 생성 완료를 반환값으로 알림 (테스트용)
+        return defect_box_id
 
     def _generate_defective_label_image(self, defect_box_id, item_code, item_name, item_spec, quantity, worker_name, creation_date):
         """'불량표' 라벨 이미지를 생성합니다."""
@@ -1608,6 +1647,20 @@ class InspectionProgram:
         if hasattr(self, 'defective_mode_button'):
             self.defective_mode_button.config(text="검사 모드로" if is_defective else "불량 처리 모드")
 
+        # 불량 모드일 때는 다른 모드 버튼들을 숨김 (UI 겹침 방지)
+        if is_defective:
+            # 다른 모드 버튼들 숨김
+            if hasattr(self, 'rework_mode_button'):
+                self.rework_mode_button.pack_forget()
+            if hasattr(self, 'remnant_mode_button'):
+                self.remnant_mode_button.pack_forget()
+        else:
+            # 검사/리워크/잔량 모드일 때는 모든 버튼 표시
+            if hasattr(self, 'rework_mode_button'):
+                self.rework_mode_button.pack(side=tk.RIGHT, padx=(5,0))
+            if hasattr(self, 'remnant_mode_button'):
+                self.remnant_mode_button.pack(side=tk.RIGHT, padx=(5,0))
+
         if is_rework:
             self.rework_view_frame.tkraise()
             self.scan_entry = self.scan_entry_rework
@@ -1620,7 +1673,7 @@ class InspectionProgram:
         else:
             self.inspection_view_frame.tkraise()
             self.scan_entry = self.scan_entry_inspection
-            
+
         self.on_pedal_release_ui_feedback()
         self._update_current_item_label()
         self._schedule_focus_return()
@@ -1691,15 +1744,37 @@ class InspectionProgram:
             return None
         except ValueError: return None
 
-    def _start_automated_test_thread(self, item_code: str, num_good: int, num_defect: int, num_pallets: int, num_reworks: int, num_remnants: int):
+    def _start_automated_test_thread(self, item_code: str, num_good: int, num_defect: int, num_pallets: int, num_reworks: int, num_remnants: int, num_defect_merge: int = 0):
         if not item_code:
             messagebox.showwarning("품목 선택 오류", "테스트를 시작할 품목이 선택되지 않았습니다.")
             return
         threading.Thread(
             target=self._automated_test_sequence,
-            args=(item_code, num_good, num_defect, num_pallets, num_reworks, num_remnants),
+            args=(item_code, num_good, num_defect, num_pallets, num_reworks, num_remnants, num_defect_merge),
             daemon=True
         ).start()
+
+    def _run_defect_mode_test(self):
+        """불량 모드 전용 테스트"""
+        if not self.items_data:
+            messagebox.showerror("오류", "Item.csv에 데이터가 없어 테스트를 진행할 수 없습니다.")
+            return
+
+        # 첫 번째 품목으로 테스트
+        test_item = self.items_data[0]
+        item_code = test_item.get('Item Code', 'TEST001')
+        threading.Thread(target=self._defect_mode_test_sequence, args=(item_code,), daemon=True).start()
+
+    def _run_defect_merge_test(self):
+        """불량품 통합 모드 전용 테스트"""
+        if not self.items_data:
+            messagebox.showerror("오류", "Item.csv에 데이터가 없어 테스트를 진행할 수 없습니다.")
+            return
+
+        # 첫 번째 품목으로 테스트
+        test_item = self.items_data[0]
+        item_code = test_item.get('Item Code', 'TEST001')
+        threading.Thread(target=self._defect_merge_test_sequence, args=(item_code,), daemon=True).start()
 
     def _prompt_for_test_item(self):
         if not self.items_data:
@@ -1754,6 +1829,17 @@ class InspectionProgram:
         ttk.Label(remnant_settings_frame, text="잔량 등록 테스트 수량 (개):").grid(row=0, column=0, sticky='w', padx=5, pady=4)
         ttk.Spinbox(remnant_settings_frame, from_=0, to=100, textvariable=remnant_var, width=10).grid(row=0, column=2, sticky='e', padx=5, pady=4)
 
+        ttk.Separator(scenario_frame, orient='horizontal').pack(fill='x', pady=10)
+
+        # 불량품 통합 모드 테스트 설정 추가
+        defect_merge_frame = ttk.Frame(scenario_frame)
+        defect_merge_frame.pack(fill=tk.X)
+        defect_merge_frame.columnconfigure(1, weight=1)
+
+        defect_merge_var = tk.StringVar(value="5")
+        ttk.Label(defect_merge_frame, text="불량품 통합 테스트 수량 (개):").grid(row=0, column=0, sticky='w', padx=5, pady=4)
+        ttk.Spinbox(defect_merge_frame, from_=0, to=100, textvariable=defect_merge_var, width=10).grid(row=0, column=2, sticky='e', padx=5, pady=4)
+
         def get_settings():
             try:
                 num_good = int(good_var.get())
@@ -1761,15 +1847,16 @@ class InspectionProgram:
                 num_pallets = int(pallet_var.get())
                 num_reworks = int(rework_var.get())
                 num_remnants = int(remnant_var.get())
-                if num_good <= 0 or num_defect < 0 or num_pallets <= 0 or num_reworks < 0 or num_remnants < 0:
+                num_defect_merge = int(defect_merge_var.get())
+                if num_good <= 0 or num_defect < 0 or num_pallets <= 0 or num_reworks < 0 or num_remnants < 0 or num_defect_merge < 0:
                     raise ValueError("수량은 0 이상이어야 합니다.")
                 total_generated_defects = num_defect * num_pallets
                 if total_generated_defects < num_reworks:
-                    messagebox.showwarning("설정 오류", 
-                                          f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.", 
+                    messagebox.showwarning("설정 오류",
+                                          f"리워크할 개수({num_reworks})는 전체 테스트에서 발생하는 불량 개수({total_generated_defects})보다 많을 수 없습니다.",
                                           parent=popup)
                     return None
-                return num_good, num_defect, num_pallets, num_reworks, num_remnants
+                return num_good, num_defect, num_pallets, num_reworks, num_remnants, num_defect_merge
             except (ValueError, TypeError) as e:
                 messagebox.showerror("입력 오류", f"수량 설정이 올바르지 않습니다.\n{e}", parent=popup)
                 return None
@@ -1777,7 +1864,7 @@ class InspectionProgram:
         def start_with_selection():
             settings = get_settings()
             if settings is None: return
-            num_good, num_defect, num_pallets, num_reworks, num_remnants = settings
+            num_good, num_defect, num_pallets, num_reworks, num_remnants, num_defect_merge = settings
 
             selected_str = item_combobox.get()
             if not selected_str:
@@ -1786,19 +1873,19 @@ class InspectionProgram:
             try:
                 item_code = re.search(r'\((\S+)\)$', selected_str).group(1)
                 popup.destroy()
-                self._start_automated_test_thread(item_code, num_good, num_defect, num_pallets, num_reworks, num_remnants)
+                self._start_automated_test_thread(item_code, num_good, num_defect, num_pallets, num_reworks, num_remnants, num_defect_merge)
             except (AttributeError, IndexError):
                 messagebox.showerror("오류", "선택된 품목에서 품목 코드를 추출할 수 없습니다.", parent=popup)
 
         def start_with_random():
             settings = get_settings()
             if settings is None: return
-            num_good, num_defect, num_pallets, num_reworks, num_remnants = settings
+            num_good, num_defect, num_pallets, num_reworks, num_remnants, num_defect_merge = settings
 
             random_item = random.choice(self.items_data)
             item_code = random_item.get('Item Code')
             popup.destroy()
-            self._start_automated_test_thread(item_code, num_good, num_defect, num_pallets, num_reworks, num_remnants)
+            self._start_automated_test_thread(item_code, num_good, num_defect, num_pallets, num_reworks, num_remnants, num_defect_merge)
 
         ttk.Button(button_container, text="선택 품목으로 시작", command=start_with_selection).pack(side=tk.LEFT, padx=10)
         ttk.Button(button_container, text="무작위 품목으로 시작", command=start_with_random).pack(side=tk.LEFT, padx=10)
@@ -1940,8 +2027,26 @@ class InspectionProgram:
             self._handle_exclusion_scan(raw_barcode)
             return
         
+        # 테스트 코드들은 검사모드에서만 실행
         if raw_barcode.upper() == "_RUN_AUTO_TEST_":
+            if self.current_mode != "standard":
+                self.show_fullscreen_warning("테스트 오류", "테스트 코드는 검사 모드에서만 실행할 수 있습니다.\n'검사 모드로' 버튼을 눌러 검사 모드로 전환해주세요.", self.COLOR_DEFECT)
+                return
             self.root.after(0, self._prompt_for_test_item)
+            return
+
+        if raw_barcode.upper() == "_TEST_DEFECT_MODE_":
+            if self.current_mode != "standard":
+                self.show_fullscreen_warning("테스트 오류", "테스트 코드는 검사 모드에서만 실행할 수 있습니다.", self.COLOR_DEFECT)
+                return
+            self.root.after(0, self._run_defect_mode_test)
+            return
+
+        if raw_barcode.upper() == "_TEST_DEFECT_MERGE_":
+            if self.current_mode != "standard":
+                self.show_fullscreen_warning("테스트 오류", "테스트 코드는 검사 모드에서만 실행할 수 있습니다.", self.COLOR_DEFECT)
+                return
+            self.root.after(0, self._run_defect_merge_test)
             return
 
         barcode = raw_barcode
@@ -1960,6 +2065,9 @@ class InspectionProgram:
         self._update_last_activity_time()
         
         if barcode.upper().startswith("TEST_LOG_"):
+            if self.current_mode != "standard":
+                self.show_fullscreen_warning("테스트 오류", "테스트 코드는 검사 모드에서만 실행할 수 있습니다.\n'검사 모드로' 버튼을 눌러 검사 모드로 전환해주세요.", self.COLOR_DEFECT)
+                return
             try:
                 parts = barcode.upper().split('_')
                 count = int(parts[2])
@@ -2291,11 +2399,16 @@ class InspectionProgram:
 
     def _resume_submitted_session(self, master_label_code: str):
         """실수로 제출된 세션을 로그 파일에서 찾아 복원합니다."""
-        
-        log_details = self._find_last_tray_complete_log(master_label_code)
+
+        # 테스트 모드에서는 가상 기록을 생성
+        if getattr(self, 'is_auto_testing', False):
+            log_details = self._create_test_resume_log(master_label_code)
+        else:
+            log_details = self._find_last_tray_complete_log(master_label_code)
 
         if not log_details:
-            messagebox.showerror("복원 실패", "이전 작업 기록을 로그 파일에서 찾을 수 없습니다.")
+            if not getattr(self, 'is_auto_testing', False):
+                messagebox.showerror("복원 실패", "이전 작업 기록을 로그 파일에서 찾을 수 없습니다.")
             return
 
         try:
@@ -2604,12 +2717,14 @@ class InspectionProgram:
                 worker_name=self.worker_name,
                 creation_date=now.strftime('%Y-%m-%d %H:%M:%S')
             )
-            if sys.platform == "win32" and show_popup:
+            # 테스트 모드가 아니고 show_popup이 True일 때만 파일 열기
+            if sys.platform == "win32" and show_popup and not getattr(self, 'is_auto_testing', False):
                 os.startfile(image_path)
         except Exception as e:
-            if show_popup: messagebox.showwarning("이미지 생성 실패", f"라벨 이미지 생성에 실패했습니다: {e}")
+            if show_popup and not getattr(self, 'is_auto_testing', False):
+                messagebox.showwarning("이미지 생성 실패", f"라벨 이미지 생성에 실패했습니다: {e}")
 
-        if show_popup:
+        if show_popup and not getattr(self, 'is_auto_testing', False):
             messagebox.showinfo("생성 완료", f"잔량표 생성이 완료되었습니다.\n\n잔량 ID: {remnant_id}\n\n라벨 이미지가 '{self.labels_folder}' 폴더에 저장되었습니다.")
         
         self.toggle_remnant_mode()
@@ -2932,7 +3047,15 @@ class InspectionProgram:
                 log_type, log_entry = self.log_queue.get(timeout=1.0)
                 if log_entry is None: break
 
-                target_path = self.rework_log_file_path if log_type == 'rework' else self.log_file_path
+                # 테스트 로그와 일반 로그를 구분하여 처리
+                if log_type == 'test_main':
+                    target_path = self.test_log_file_path
+                elif log_type == 'test_rework':
+                    target_path = self.test_rework_log_file_path
+                elif log_type == 'rework':
+                    target_path = self.rework_log_file_path
+                else:  # main
+                    target_path = self.log_file_path
 
                 if not target_path:
                     time.sleep(0.1)
@@ -2945,7 +3068,7 @@ class InspectionProgram:
                     writer = csv.DictWriter(f, fieldnames=headers)
                     if not file_exists:
                         writer.writeheader()
-                    
+
                     log_entry_for_csv = log_entry.copy()
                     log_entry_for_csv['worker'] = log_entry_for_csv.pop('worker_name')
                     writer.writerow(log_entry_for_csv)
@@ -2956,18 +3079,51 @@ class InspectionProgram:
     def _log_event(self, event_type: str, detail: Optional[Dict] = None):
         if not self.worker_name and event_type not in ['UPDATE_CHECK_FOUND', 'UPDATE_STARTED', 'UPDATE_FAILED', 'ITEM_DATA_LOADED']:
             return
-            
+
         worker = self.worker_name if self.worker_name else "System"
-        
+
         log_entry = {
             'timestamp': datetime.datetime.now().isoformat(),
             'worker_name': worker,
             'event': event_type,
             'details': json.dumps(detail, ensure_ascii=False) if detail else ''
         }
-        
-        log_type = 'rework' if event_type.startswith('REWORK_') else 'main'
+
+        # 테스트 관련 이벤트 감지
+        is_test_event = self._is_test_related_event(event_type, detail)
+
+        if is_test_event:
+            if event_type.startswith('REWORK_'):
+                log_type = 'test_rework'
+            else:
+                log_type = 'test_main'
+        else:
+            log_type = 'rework' if event_type.startswith('REWORK_') else 'main'
+
         self.log_queue.put((log_type, log_entry))
+
+    def _is_test_related_event(self, event_type: str, detail: Optional[Dict] = None) -> bool:
+        """이벤트가 테스트 관련인지 판단합니다."""
+        # 자동 테스트 실행 중이면 테스트 관련
+        if getattr(self, 'is_auto_testing', False):
+            return True
+
+        # 세션이 테스트 트레이인 경우
+        if hasattr(self, 'current_session') and getattr(self.current_session, 'is_test_tray', False):
+            return True
+
+        # 디테일에서 테스트 관련 키워드 확인
+        if detail:
+            detail_str = json.dumps(detail, ensure_ascii=False).upper()
+            test_keywords = ['TEST-', 'TEST_', 'TEMPWORKERFORTEST', 'AUTO_TEST', 'TEST_TRAY']
+            if any(keyword in detail_str for keyword in test_keywords):
+                return True
+
+        # 이벤트 타입에서 테스트 관련 키워드 확인
+        if any(keyword in event_type.upper() for keyword in ['TEST', 'AUTO_TEST']):
+            return True
+
+        return False
 
     def show_status_message(self, message: str, color: Optional[str] = None, duration: int = 4000):
         if not self.root.winfo_exists(): return
@@ -2985,7 +3141,8 @@ class InspectionProgram:
 
     def initiate_master_label_replacement(self):
         """(1) 교체 프로세스를 시작합니다."""
-        if self.current_session.master_label_code:
+        # 테스트 모드가 아닐 때만 진행 중인 작업 체크
+        if not getattr(self, 'is_auto_testing', False) and self.current_session.master_label_code:
             messagebox.showwarning("작업 중 오류", "진행 중인 작업이 있을 때는 현품표를 교체할 수 없습니다.")
             return
 
@@ -3033,7 +3190,16 @@ class InspectionProgram:
     def _perform_historical_master_label_swap(self):
         """(4) [수정] 모든 로컬 로그 파일을 검색하여 교체할 기록을 찾습니다."""
         old_label = self.replacement_context.get('old_label')
-        
+
+        # 테스트 모드에서는 가상의 기록을 생성
+        if getattr(self, 'is_auto_testing', False):
+            # 테스트용 가상 기록 생성
+            test_log_info = self._create_test_log_info(old_label)
+            if test_log_info:
+                self.replacement_context.update(test_log_info)
+                self._compare_quantities_and_proceed()
+                return
+
         # 1. C:\Sync 폴더의 모든 로그 파일 목록을 가져옵니다.
         log_file_pattern = re.compile(r"검사작업이벤트로그_.*_(\d{8})\.csv")
         try:
@@ -3041,7 +3207,8 @@ class InspectionProgram:
             # 최신 파일부터 검색하기 위해 역순으로 정렬합니다.
             all_log_files.sort(reverse=True)
         except FileNotFoundError:
-            messagebox.showerror("오류", f"로그 폴더 '{self.save_folder}'를 찾을 수 없습니다.")
+            if not getattr(self, 'is_auto_testing', False):
+                messagebox.showerror("오류", f"로그 폴더 '{self.save_folder}'를 찾을 수 없습니다.")
             self.cancel_master_label_replacement()
             return
 
@@ -3051,15 +3218,89 @@ class InspectionProgram:
             found_log_info = self._find_log_in_file(log_path, old_label)
             if found_log_info:
                 break # 기록을 찾았으면 검색을 중단합니다.
-        
+
         # 3. 검색 결과에 따라 다음 단계를 진행합니다.
         if found_log_info:
             self.replacement_context.update(found_log_info) # 찾은 파일 경로, 내용 등을 컨텍스트에 추가
             self._compare_quantities_and_proceed() # 수량 비교 및 추가/제외 스캔 단계로 이동
         else:
-            messagebox.showwarning("기록 없음", f"모든 로컬 로그 파일에서 해당 현품표({old_label})의 완료 기록을 찾을 수 없습니다.")
+            if not getattr(self, 'is_auto_testing', False):
+                messagebox.showwarning("기록 없음", f"모든 로컬 로그 파일에서 해당 현품표({old_label})의 완료 기록을 찾을 수 없습니다.")
             self.cancel_master_label_replacement()
-    
+
+    def _create_test_log_info(self, old_label: str) -> Optional[Dict]:
+        """테스트 모드에서 사용할 가상 로그 정보를 생성합니다."""
+        try:
+            # 테스트용 가상 로그 파일 경로 (실제 파일은 생성하지 않음)
+            test_log_path = os.path.join(self.test_folder, f"TEST_검사작업이벤트로그_{self.worker_name}_{datetime.datetime.now().strftime('%Y%m%d')}.csv")
+
+            # 테스트용 가상 검사 기록 생성
+            test_details = {
+                'master_label_code': old_label,
+                'item_code': 'TEST001',
+                'item_name': 'Test Product',
+                'item_spec': 'Test Spec',
+                'tray_capacity': 5,  # 기본 테스트 수량
+                'scanned_product_barcodes': [
+                    f'TEST-GOOD-P1-{i}-TEST001-{datetime.datetime.now().strftime("%f")}'
+                    for i in range(5)
+                ],
+                'defective_product_barcodes': [],
+                'scan_count': 5,
+                'worker_name': self.worker_name,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
+            # 가상 CSV 행 데이터 생성
+            test_rows = [
+                {
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    'worker': self.worker_name,
+                    'event': 'TRAY_COMPLETED',
+                    'details': json.dumps(test_details, ensure_ascii=False)
+                }
+            ]
+
+            return {
+                'found_log_path': test_log_path,
+                'found_row_index': 0,
+                'headers': ['timestamp', 'worker', 'event', 'details'],
+                'all_rows': test_rows,
+                'original_details': test_details
+            }
+
+        except Exception as e:
+            print(f"테스트 로그 정보 생성 오류: {e}")
+            return None
+
+    def _create_test_resume_log(self, master_label_code: str) -> Optional[Dict]:
+        """테스트 모드에서 사용할 가상 복원 로그를 생성합니다."""
+        try:
+            # 테스트용 가상 검사 기록 생성 (일부 완료 상태)
+            test_details = {
+                'master_label_code': master_label_code,
+                'item_code': 'TEST001',
+                'item_name': 'Test Product',
+                'item_spec': 'Test Spec',
+                'tray_capacity': 10,  # 목표 수량
+                'scanned_product_barcodes': [
+                    f'RESUME-ITEM-{i}-TEST001-{datetime.datetime.now().strftime("%f")}'
+                    for i in range(3)  # 3개만 스캔된 상태
+                ],
+                'defective_product_barcodes': [],
+                'scan_count': 3,
+                'worker_name': self.worker_name,
+                'work_time_sec': 120.5,  # 작업 시간
+                'timestamp': datetime.datetime.now().isoformat(),
+                'is_partial_submission': True
+            }
+
+            return test_details
+
+        except Exception as e:
+            print(f"테스트 복원 로그 생성 오류: {e}")
+            return None
+
     def _find_log_in_file(self, file_path: str, old_label: str) -> Optional[Dict]:
         """[신규] 지정된 파일에서 old_label에 해당하는 로그를 찾아 관련 정보를 반환합니다."""
         try:
@@ -3099,15 +3340,31 @@ class InspectionProgram:
         if old_qty == new_qty:
             self._finalize_replacement()
         elif new_qty > old_qty:
-            self.replacement_context['items_needed'] = new_qty - old_qty
-            self.replacement_context['additional_items'] = []
-            self.master_label_replace_state = 'awaiting_additional_items'
-            self._update_current_item_label()
+            # 테스트 모드에서는 자동으로 가상 아이템 추가
+            if getattr(self, 'is_auto_testing', False):
+                items_needed = new_qty - old_qty
+                self.replacement_context['additional_items'] = [
+                    f'TEST-ADDITIONAL-{i}-{datetime.datetime.now().strftime("%f")}'
+                    for i in range(items_needed)
+                ]
+                self._finalize_replacement()
+            else:
+                self.replacement_context['items_needed'] = new_qty - old_qty
+                self.replacement_context['additional_items'] = []
+                self.master_label_replace_state = 'awaiting_additional_items'
+                self._update_current_item_label()
         else: # new_qty < old_qty
-            self.replacement_context['items_to_remove_count'] = old_qty - new_qty
-            self.replacement_context['removed_items'] = []
-            self.master_label_replace_state = 'awaiting_removed_items'
-            self._update_current_item_label()
+            # 테스트 모드에서는 자동으로 가상 아이템 제거
+            if getattr(self, 'is_auto_testing', False):
+                items_to_remove = old_qty - new_qty
+                original_barcodes = self.replacement_context['original_details'].get('scanned_product_barcodes', [])
+                self.replacement_context['removed_items'] = original_barcodes[:items_to_remove]
+                self._finalize_replacement()
+            else:
+                self.replacement_context['items_to_remove_count'] = old_qty - new_qty
+                self.replacement_context['removed_items'] = []
+                self.master_label_replace_state = 'awaiting_removed_items'
+                self._update_current_item_label()
 
     def _handle_additional_item_scan(self, barcode: str):
         """(5-A) 추가할 제품 스캔을 처리하는 함수"""
@@ -3170,22 +3427,28 @@ class InspectionProgram:
 
         # --- (파일 저장 로직 수정) ---
         try:
-            # 컨텍스트에 저장된 '찾았던 파일의 경로'에 수정된 전체 내용을 다시 씁니다.
-            with open(ctx['found_log_path'], 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.DictWriter(f, fieldnames=ctx['headers'])
-                writer.writeheader()
-                writer.writerows(ctx['all_rows'])
-            
+            # 테스트 모드가 아닐 때만 실제 파일에 저장
+            if not getattr(self, 'is_auto_testing', False):
+                # 컨텍스트에 저장된 '찾았던 파일의 경로'에 수정된 전체 내용을 다시 씁니다.
+                with open(ctx['found_log_path'], 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.DictWriter(f, fieldnames=ctx['headers'])
+                    writer.writeheader()
+                    writer.writerows(ctx['all_rows'])
+
             # 성공 처리
             log_details = {'old_master_label': ctx['old_label'], 'new_master_label': ctx['new_label']}
             self._log_event('HISTORICAL_REPLACE_SUCCESS', detail=log_details)
-            messagebox.showinfo("교체 완료", "현품표 정보가 성공적으로 교체 및 수정되었습니다.")
-            
+
+            # 테스트 모드가 아닐 때만 팝업 표시
+            if not getattr(self, 'is_auto_testing', False):
+                messagebox.showinfo("교체 완료", "현품표 정보가 성공적으로 교체 및 수정되었습니다.")
+
             self._load_session_state()
             self._update_all_summaries()
 
         except Exception as e:
-            messagebox.showerror("파일 쓰기 오류", f"수정된 로그 저장 중 오류: {e}")
+            if not getattr(self, 'is_auto_testing', False):
+                messagebox.showerror("파일 쓰기 오류", f"수정된 로그 저장 중 오류: {e}")
         finally:
             self.cancel_master_label_replacement()
 
@@ -3332,13 +3595,19 @@ class InspectionProgram:
         tree = event.widget
         if not tree.selection():
             return
-        
+
         selected_item_id = tree.selection()[0]
         item_values = tree.item(selected_item_id, 'values')
-        
+
         if item_values and len(item_values) > 1:
             item_code = item_values[1]
-            self._show_labels_for_item_window(item_code)
+
+            # 불량 현황 트리뷰에서 더블클릭한 경우 불량표 연결
+            if tree == self.defect_summary_tree:
+                self._show_defect_labels_for_item_window(item_code)
+            else:
+                # 일반 작업 현황 트리뷰의 경우 기존 라벨 보기
+                self._show_labels_for_item_window(item_code)
 
     def _get_todays_log_details(self) -> tuple[dict, dict]:
         """오늘 로그 파일을 읽어 TRAY_COMPLETE와 교체 이력을 반환합니다."""
@@ -3437,7 +3706,244 @@ class InspectionProgram:
                 self._show_label_details_window(item_specific_logs[selected_iid])
 
         tree.bind("<Double-1>", on_label_double_click)
-        
+
+    def _show_defect_labels_for_item_window(self, item_code: str):
+        """해당 품목의 불량표 목록을 새 창에 표시합니다."""
+        detail_win = tk.Toplevel(self.root)
+        detail_win.title(f"불량표 목록 - {item_code}")
+        detail_win.geometry("800x600")
+        detail_win.transient(self.root)
+        detail_win.grab_set()
+
+        main_frame = ttk.Frame(detail_win, padding=15)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 제목
+        title_label = ttk.Label(main_frame, text=f"품목 코드 '{item_code}'의 불량표 목록",
+                               style='TLabel', font=(self.DEFAULT_FONT, int(14 * self.scale_factor), 'bold'))
+        title_label.pack(pady=(0, 10))
+
+        # 불량표 목록 프레임
+        list_frame = ttk.Frame(main_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 트리뷰 생성
+        columns = ('defect_id', 'creation_date', 'quantity', 'worker')
+        tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
+
+        tree.heading('defect_id', text='불량상자 ID')
+        tree.heading('creation_date', text='생성일시')
+        tree.heading('quantity', text='수량')
+        tree.heading('worker', text='작업자')
+
+        tree.column('defect_id', width=200, anchor='center')
+        tree.column('creation_date', width=150, anchor='center')
+        tree.column('quantity', width=80, anchor='center')
+        tree.column('worker', width=100, anchor='center')
+
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 스크롤바
+        scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=tree.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        # 불량표 데이터 로드
+        defect_data = self._load_defect_labels_for_item(item_code)
+
+        if not defect_data:
+            # 데이터가 없는 경우
+            tree.insert('', 'end', values=('데이터 없음', '해당 품목의 불량표가 없습니다', '', ''))
+        else:
+            # 데이터가 있는 경우 삽입
+            for data in defect_data:
+                tree.insert('', 'end', values=(
+                    data.get('defect_box_id', 'N/A'),
+                    data.get('creation_date', 'N/A'),
+                    f"{data.get('quantity', 0)}개",
+                    data.get('worker', 'N/A')
+                ), tags=(data.get('file_path', ''),))
+
+        # 버튼 프레임
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+
+        def open_defect_label():
+            """선택된 불량표를 열어봅니다."""
+            if not tree.selection():
+                messagebox.showwarning("선택 오류", "불량표를 선택해주세요.")
+                return
+
+            selected_item = tree.selection()[0]
+            tags = tree.item(selected_item, 'tags')
+
+            if tags and tags[0]:
+                file_path = tags[0]
+                try:
+                    # JSON 파일에서 데이터 로드
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        defect_data = json.load(f)
+
+                    # 불량표 상세 정보 창 표시
+                    self._show_defect_label_details_window(defect_data, file_path)
+
+                except Exception as e:
+                    messagebox.showerror("파일 오류", f"불량표 파일을 열 수 없습니다: {e}")
+
+        def open_defect_image():
+            """선택된 불량표 이미지를 엽니다."""
+            if not tree.selection():
+                messagebox.showwarning("선택 오류", "불량표를 선택해주세요.")
+                return
+
+            selected_item = tree.selection()[0]
+            values = tree.item(selected_item, 'values')
+            defect_id = values[0]
+
+            # 이미지 파일 경로 생성
+            image_path = os.path.join(self.labels_folder, f"불량표_{defect_id}.png")
+
+            if os.path.exists(image_path):
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(image_path)
+                    else:
+                        subprocess.run(['xdg-open', image_path])
+                except Exception as e:
+                    messagebox.showerror("파일 열기 오류", f"이미지를 열 수 없습니다: {e}")
+            else:
+                messagebox.showwarning("파일 없음", "해당 불량표 이미지 파일을 찾을 수 없습니다.")
+
+        # 버튼들
+        ttk.Button(button_frame, text="불량표 상세보기", command=open_defect_label).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(button_frame, text="불량표 이미지 열기", command=open_defect_image).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="닫기", command=detail_win.destroy).pack(side=tk.RIGHT)
+
+        # 더블클릭으로 상세보기
+        tree.bind("<Double-1>", lambda e: open_defect_label())
+
+    def _load_defect_labels_for_item(self, item_code: str) -> List[Dict]:
+        """해당 품목의 불량표 데이터를 로드합니다."""
+        defect_data = []
+
+        if not hasattr(self, 'defects_data_folder') or not os.path.exists(self.defects_data_folder):
+            return defect_data
+
+        try:
+            # 오늘 날짜의 폴더에서 검색
+            today = datetime.datetime.now()
+            daily_folder = self._get_daily_folder_path(self.defects_data_folder)
+
+            if os.path.exists(daily_folder):
+                for filename in os.listdir(daily_folder):
+                    if filename.endswith('.json') and filename.startswith('DEFECT-'):
+                        file_path = os.path.join(daily_folder, filename)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+
+                            # 해당 품목의 불량표인지 확인
+                            if data.get('item_code') == item_code:
+                                # 생성일시 포맷팅
+                                creation_date = data.get('creation_date', '')
+                                if creation_date:
+                                    try:
+                                        dt = datetime.datetime.fromisoformat(creation_date.replace('Z', '+00:00'))
+                                        data['creation_date'] = dt.strftime('%Y-%m-%d %H:%M:%S')
+                                    except:
+                                        pass
+
+                                data['file_path'] = file_path
+                                defect_data.append(data)
+
+                        except Exception as e:
+                            print(f"불량표 파일 로드 오류 ({filename}): {e}")
+                            continue
+
+            # 생성일시 기준 내림차순 정렬 (최신순)
+            defect_data.sort(key=lambda x: x.get('creation_date', ''), reverse=True)
+
+        except Exception as e:
+            print(f"불량표 데이터 로드 오류: {e}")
+
+        return defect_data
+
+    def _show_defect_label_details_window(self, defect_data: Dict, file_path: str):
+        """불량표의 상세 정보를 새 창에 표시합니다."""
+        detail_win = tk.Toplevel(self.root)
+        detail_win.title(f"불량표 상세 정보 - {defect_data.get('defect_box_id', 'N/A')}")
+        detail_win.geometry("700x650")
+        detail_win.transient(self.root)
+        detail_win.grab_set()
+
+        main_frame = ttk.Frame(detail_win, padding=15)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.grid_columnconfigure(1, weight=1)
+
+        # 기본 정보
+        info_map = [
+            ("불량상자 ID:", defect_data.get('defect_box_id', 'N/A')),
+            ("품목명:", defect_data.get('item_name', 'N/A')),
+            ("품목 코드:", defect_data.get('item_code', 'N/A')),
+            ("품목 규격:", defect_data.get('item_spec', 'N/A')),
+            ("생성일시:", defect_data.get('creation_date', 'N/A')),
+            ("수량:", f"{defect_data.get('quantity', 0)}개"),
+            ("작업자:", defect_data.get('worker', 'N/A')),
+            ("파일 경로:", file_path),
+        ]
+
+        for i, (label, value) in enumerate(info_map):
+            ttk.Label(main_frame, text=label, style='TLabel', font=(self.DEFAULT_FONT, int(10 * self.scale_factor), 'bold')).grid(row=i, column=0, sticky='w', pady=2, padx=(0, 10))
+            ttk.Label(main_frame, text=str(value), style='TLabel').grid(row=i, column=1, sticky='w', pady=2)
+
+        # 불량품 바코드 목록
+        ttk.Label(main_frame, text="불량품 바코드 목록:", style='TLabel', font=(self.DEFAULT_FONT, int(10 * self.scale_factor), 'bold')).grid(row=len(info_map), column=0, sticky='nw', pady=(15, 5), padx=(0, 10))
+
+        # 바코드 리스트박스
+        listbox_frame = ttk.Frame(main_frame)
+        listbox_frame.grid(row=len(info_map), column=1, sticky='nsew', pady=(15, 0))
+        listbox_frame.grid_columnconfigure(0, weight=1)
+        listbox_frame.grid_rowconfigure(0, weight=1)
+
+        barcodes_listbox = tk.Listbox(listbox_frame, height=12, font=(self.DEFAULT_FONT, int(9 * self.scale_factor)))
+        barcodes_listbox.grid(row=0, column=0, sticky='nsew')
+
+        # 바코드 데이터 추가
+        barcodes = defect_data.get('barcodes', [])
+        for i, barcode in enumerate(barcodes, 1):
+            barcodes_listbox.insert(tk.END, f"{i:2d}. {barcode}")
+
+        # 스크롤바
+        barcode_scrollbar = ttk.Scrollbar(listbox_frame, orient='vertical', command=barcodes_listbox.yview)
+        barcode_scrollbar.grid(row=0, column=1, sticky='ns')
+        barcodes_listbox.configure(yscrollcommand=barcode_scrollbar.set)
+
+        # 하단 버튼
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=len(info_map)+1, column=0, columnspan=2, sticky='ew', pady=(15, 0))
+
+        def open_image():
+            """불량표 이미지를 엽니다."""
+            defect_id = defect_data.get('defect_box_id', '')
+            image_path = os.path.join(self.labels_folder, f"불량표_{defect_id}.png")
+
+            if os.path.exists(image_path):
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(image_path)
+                    else:
+                        subprocess.run(['xdg-open', image_path])
+                except Exception as e:
+                    messagebox.showerror("파일 열기 오류", f"이미지를 열 수 없습니다: {e}")
+            else:
+                messagebox.showwarning("파일 없음", "해당 불량표 이미지 파일을 찾을 수 없습니다.")
+
+        ttk.Button(button_frame, text="불량표 이미지 열기", command=open_image).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="닫기", command=detail_win.destroy).pack(side=tk.RIGHT)
+
+        # 그리드 가중치 설정
+        main_frame.grid_rowconfigure(len(info_map), weight=1)
+
     def _show_label_details_window(self, details: Dict):
         """현품표의 상세 정보를 새 창에 표시합니다."""
         detail_win = tk.Toplevel(self.root)
@@ -3497,7 +4003,7 @@ class InspectionProgram:
     # ===================================================================
     # 자동 테스트 로직
     # ===================================================================
-    def _automated_test_sequence(self, test_item_code: str, num_good: int, num_defect: int, num_pallets: int, num_reworks: int, num_remnants: int):
+    def _automated_test_sequence(self, test_item_code: str, num_good: int, num_defect: int, num_pallets: int, num_reworks: int, num_remnants: int, num_defect_merge: int = 0):
         self.is_auto_testing = True
         self.is_simulating_defect_press = False
         original_title = self.root.title()
@@ -3589,10 +4095,27 @@ class InspectionProgram:
                     remnant_barcode = f"TEST-REMNANT-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
                     simulate_scan(remnant_barcode, self.scan_entry_remnant)
                 def create_remnant_and_store_id():
+                    # 잔량 라벨 생성 전 labels 폴더 상태 확인
+                    labels_folder = self.labels_folder
+                    if not os.path.exists(labels_folder):
+                        os.makedirs(labels_folder)
+                    before_count = len([f for f in os.listdir(labels_folder) if f.startswith("SPARE-") and f.endswith(".png")])
+
                     remnant_id = self._generate_remnant_label(show_popup=False)
                     if remnant_id:
                         captured_remnant_info['id'] = remnant_id
                         captured_remnant_info['count'] = num_remnants
+
+                        # 잔량 라벨 생성 후 확인
+                        time.sleep(2)  # 라벨 생성 시간 대기
+                        after_count = len([f for f in os.listdir(labels_folder) if f.startswith("SPARE-") and f.endswith(".png")])
+                        if after_count > before_count:
+                            latest_remnant_label = max([f for f in os.listdir(labels_folder) if f.startswith("SPARE-") and f.endswith(".png")],
+                                                     key=lambda x: os.path.getctime(os.path.join(labels_folder, x)))
+                            self.show_status_message(f"테스트: 잔량표 생성 성공! ({latest_remnant_label})", self.COLOR_SUCCESS, 3000)
+                        else:
+                            self.show_status_message("테스트: 잔량표 생성 확인 필요", self.COLOR_IDLE, 2000)
+
                 self.root.after(0, create_remnant_and_store_id)
                 wait_for_state(lambda: self.current_mode == 'standard', "잔량 생성 후 검사 모드 복귀")
                 self.root.after(0, self.show_status_message, "테스트: 잔량 등록 완료", self.COLOR_SUCCESS)
@@ -3604,13 +4127,19 @@ class InspectionProgram:
                 simulate_scan(master_label_2, self.scan_entry_inspection)
                 wait_for_state(lambda: self.current_session.master_label_code, "두번째 파렛트 세션 시작")
                 self.current_session.is_test_tray = True
-                simulate_scan(captured_remnant_info['id'], self.scan_entry_inspection)
+
+                # 잔량 ID를 JSON 형태로 스캔 (실제 잔량 사용 방식과 동일)
+                remnant_json = json.dumps({"id": captured_remnant_info['id']})
+                self.root.after(0, self.show_status_message, f"테스트: 잔량 ID 스캔 - {captured_remnant_info['id']}", self.COLOR_SPARE, 2000)
+                simulate_scan(remnant_json, self.scan_entry_inspection)
                 wait_for_state(lambda: len(self.current_session.scanned_barcodes) >= captured_remnant_info['count'], "잔량 아이템 추가")
+
+                # 추가 양품 스캔
                 for i in range(5):
                     final_barcode = f"FINAL-GOOD-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
                     simulate_scan(final_barcode, self.scan_entry_inspection)
                 wait_for_state(lambda: not self.current_session.master_label_code, "두번째 파렛트 완료")
-                self.root.after(0, self.show_status_message, "테스트: 잔량 사용 완료", self.COLOR_SUCCESS)
+                self.root.after(0, self.show_status_message, "테스트: 잔량 사용 완료 - 잔량이 소비되었습니다", self.COLOR_SUCCESS, 3000)
 
             self.root.after(0, self.show_status_message, "테스트: 제출 되돌리기 시작", self.COLOR_PRIMARY, 5000)
             resume_qty = 10
@@ -3636,6 +4165,56 @@ class InspectionProgram:
             wait_for_state(lambda: not self.current_session.master_label_code, "세번째 파렛트 최종 완료")
             self.root.after(0, self.show_status_message, "테스트: 제출 되돌리기 및 재작업 완료", self.COLOR_SUCCESS)
 
+            # 불량품 통합 모드 테스트
+            if num_defect_merge > 0:
+                self.root.after(0, self.show_status_message, f"테스트: 불량품 통합 모드 테스트 시작 ({num_defect_merge}개)", self.COLOR_DEFECT, 3000)
+                time.sleep(0.5)
+
+                # 불량품 통합 모드로 전환
+                self.root.after(0, self.toggle_defective_mode)
+                wait_for_state(lambda: self.current_mode == 'defective', "불량품 통합 모드 전환")
+
+                # 테스트를 위한 품목 정보 설정
+                def setup_defect_merge_test():
+                    # 품목 정보 설정
+                    self.current_defective_merge_session.item_code = test_item_code
+                    if self.items_data:
+                        for item in self.items_data:
+                            if item.get('Item Code') == test_item_code:
+                                self.current_defective_merge_session.item_name = item.get('Item Name', test_item_code)
+                                self.current_defective_merge_session.item_spec = item.get('Item Spec', '')
+                                break
+                    # 목표 수량 설정
+                    self.current_defective_merge_session.target_quantity = num_defect_merge
+
+                self.root.after(0, setup_defect_merge_test)
+
+                # 불량품 바코드 스캔 시뮬레이션
+                for i in range(num_defect_merge):
+                    defect_barcode = f"TEST-DEFECT-MERGE-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
+                    self.root.after(0, self.show_status_message, f"테스트: 불량품 통합 스캔 {i+1}/{num_defect_merge}", self.COLOR_DEFECT, 1000)
+
+                    # 불량품 통합 모드에서 바코드 스캔
+                    if hasattr(self, 'scan_entry_defective'):
+                        simulate_scan(defect_barcode, self.scan_entry_defective)
+                    else:
+                        # 불량품 통합 스캔 엔트리가 없는 경우 직접 추가
+                        self.current_defective_merge_session.scanned_defects.append(defect_barcode)
+
+                    time.sleep(0.3)
+
+                # 불량품 통합 완료 처리
+                if len(self.current_defective_merge_session.scanned_defects) >= num_defect_merge:
+                    self.root.after(0, self.show_status_message, "테스트: 불량품 통합 목표 수량 달성", self.COLOR_SUCCESS, 2000)
+                    time.sleep(1)
+
+                # 일반 모드로 복귀
+                self.root.after(0, self.toggle_defective_mode)
+                wait_for_state(lambda: self.current_mode == 'standard', "검사 모드 복귀")
+
+                self.root.after(0, self.show_status_message, "테스트: 불량품 통합 모드 테스트 완료", self.COLOR_SUCCESS, 2000)
+                time.sleep(0.5)
+
         except Exception as e:
             self.root.after(0, lambda err=e: messagebox.showerror("테스트 오류", f"자동 테스트 중 오류가 발생했습니다:\n{type(err).__name__}: {err}"))
         finally:
@@ -3648,6 +4227,162 @@ class InspectionProgram:
             self.root.after(0, self._update_all_summaries)
             self.root.after(0, self._schedule_focus_return)
             self.root.after(100, lambda: messagebox.showinfo("테스트 완료", "자동 시뮬레이션 테스트가 모두 완료되었습니다."))
+
+    def _defect_mode_test_sequence(self, test_item_code: str):
+        """불량 모드 전용 테스트 시퀀스"""
+        self.is_auto_testing = True
+        original_title = self.root.title()
+        self.root.after(0, lambda: self.root.title(f"{original_title} (불량 모드 테스트 실행 중...)"))
+
+        try:
+            def wait_for_state(condition_func, description, timeout=10):
+                start_time = time.monotonic()
+                while not condition_func():
+                    time.sleep(0.1)
+                    if time.monotonic() - start_time > timeout:
+                        raise TimeoutError(f"'{description}' 상태 대기 시간 초과")
+
+            def simulate_scan(barcode_to_scan: str, target_entry: tk.Entry):
+                self.root.after(0, target_entry.delete, 0, tk.END)
+                self.root.after(1, lambda: target_entry.insert(0, barcode_to_scan))
+                self.root.after(2, target_entry.event_generate, '<Return>')
+                time.sleep(0.05 + self.scan_delay_sec.get())
+
+            self.root.after(0, lambda: messagebox.showinfo("불량 모드 테스트", "불량 모드 전용 테스트를 시작합니다."))
+
+            # 1. 불량품 통합 모드로 전환
+            self.root.after(0, self.show_status_message, "테스트: 불량품 통합 모드로 전환", self.COLOR_DEFECT, 3000)
+            self.root.after(0, self.toggle_defective_mode)
+            wait_for_state(lambda: self.current_mode == 'defective', "불량품 통합 모드 전환")
+
+            # 2. 품목 설정
+            def setup_defect_session():
+                self.current_defective_merge_session.item_code = test_item_code
+                if self.items_data:
+                    for item in self.items_data:
+                        if item.get('Item Code') == test_item_code:
+                            self.current_defective_merge_session.item_name = item.get('Item Name', test_item_code)
+                            self.current_defective_merge_session.item_spec = item.get('Item Spec', '')
+                            break
+                self.current_defective_merge_session.target_quantity = 5  # 테스트용 작은 수량
+
+            self.root.after(0, setup_defect_session)
+            self.root.after(0, self.show_status_message, "테스트: 불량품 5개 스캔 시작", self.COLOR_DEFECT, 2000)
+
+            # 3. 불량품 바코드 스캔
+            for i in range(5):
+                defect_barcode = f"TEST-DEFECT-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
+                simulate_scan(defect_barcode, self.scan_entry_defective)
+                time.sleep(0.3)
+
+            # 4. 불량표 생성 확인
+            wait_for_state(lambda: len(self.current_defective_merge_session.scanned_defects) >= 5, "불량품 5개 스캔 완료")
+
+            # 불량표 생성 전 defective_labels 폴더 상태 확인 (날짜별 폴더 포함)
+            defective_labels_folder = self.defective_labels_folder
+            daily_defect_folder = self._get_daily_folder_path(defective_labels_folder)
+            if not os.path.exists(daily_defect_folder):
+                os.makedirs(daily_defect_folder)
+            before_count = len([f for f in os.listdir(daily_defect_folder) if f.startswith("DEFECT-") and f.endswith(".png")])
+
+            self.root.after(0, self.show_status_message, "테스트: 불량표 자동 생성 중...", self.COLOR_SUCCESS, 2000)
+
+            # 불량표 생성이 자동으로 트리거되었는지 확인하고, 아니면 수동으로 생성
+            time.sleep(1)  # 자동 생성 대기
+            if len(self.current_defective_merge_session.scanned_defects) >= self.current_defective_merge_session.target_quantity:
+                # 목표 수량에 도달했으므로 자동 생성되어야 함
+                pass
+            else:
+                # 수동으로 불량표 생성
+                def manual_generate():
+                    defect_box_id = self.generate_defective_label()
+                    if defect_box_id:
+                        self.show_status_message(f"테스트: 불량표 수동 생성 완료 - {defect_box_id}", self.COLOR_SUCCESS, 2000)
+                self.root.after(0, manual_generate)
+
+            time.sleep(2)  # 불량표 생성 완료 대기
+
+            # 불량표 생성 후 확인
+            after_count = len([f for f in os.listdir(daily_defect_folder) if f.startswith("DEFECT-") and f.endswith(".png")])
+            if after_count > before_count:
+                latest_defect_label = max([f for f in os.listdir(daily_defect_folder) if f.startswith("DEFECT-") and f.endswith(".png")],
+                                        key=lambda x: os.path.getctime(os.path.join(daily_defect_folder, x)))
+                self.root.after(0, self.show_status_message, f"테스트: 불량표 생성 성공! ({latest_defect_label})", self.COLOR_SUCCESS, 3000)
+            else:
+                self.root.after(0, self.show_status_message, "테스트: 불량표 생성 확인 필요", self.COLOR_IDLE, 2000)
+
+            # 5. 검사 모드로 복귀
+            self.root.after(0, self.toggle_defective_mode)
+            wait_for_state(lambda: self.current_mode == 'standard', "검사 모드 복귀")
+
+            self.root.after(0, self.show_status_message, "테스트: 불량 모드 테스트 완료", self.COLOR_SUCCESS, 2000)
+
+        except Exception as e:
+            self.root.after(0, lambda err=e: messagebox.showerror("불량 모드 테스트 오류", f"테스트 중 오류: {type(err).__name__}: {err}"))
+        finally:
+            self.is_auto_testing = False
+            self.root.after(0, lambda: self.root.title(original_title))
+            self.root.after(100, lambda: messagebox.showinfo("테스트 완료", "불량 모드 테스트가 완료되었습니다."))
+
+    def _defect_merge_test_sequence(self, test_item_code: str):
+        """불량품 통합 모드 전용 테스트 시퀀스"""
+        self.is_auto_testing = True
+        original_title = self.root.title()
+        self.root.after(0, lambda: self.root.title(f"{original_title} (불량품 통합 테스트 실행 중...)"))
+
+        try:
+            def wait_for_state(condition_func, description, timeout=10):
+                start_time = time.monotonic()
+                while not condition_func():
+                    time.sleep(0.1)
+                    if time.monotonic() - start_time > timeout:
+                        raise TimeoutError(f"'{description}' 상태 대기 시간 초과")
+
+            def simulate_scan(barcode_to_scan: str, target_entry: tk.Entry):
+                self.root.after(0, target_entry.delete, 0, tk.END)
+                self.root.after(1, lambda: target_entry.insert(0, barcode_to_scan))
+                self.root.after(2, target_entry.event_generate, '<Return>')
+                time.sleep(0.05 + self.scan_delay_sec.get())
+
+            self.root.after(0, lambda: messagebox.showinfo("불량품 통합 테스트", "불량품 통합 모드 전용 테스트를 시작합니다."))
+
+            # 불량품 통합 모드로 전환
+            self.root.after(0, self.toggle_defective_mode)
+            wait_for_state(lambda: self.current_mode == 'defective', "불량품 통합 모드 전환")
+
+            # 품목 설정 및 목표 수량을 48개(기본값)로 설정
+            def setup_merge_session():
+                self.current_defective_merge_session.item_code = test_item_code
+                if self.items_data:
+                    for item in self.items_data:
+                        if item.get('Item Code') == test_item_code:
+                            self.current_defective_merge_session.item_name = item.get('Item Name', test_item_code)
+                            self.current_defective_merge_session.item_spec = item.get('Item Spec', '')
+                            break
+                # 기본 목표 수량 48개 사용
+
+            self.root.after(0, setup_merge_session)
+            self.root.after(0, self.show_status_message, "테스트: 불량품 10개 스캔으로 진행률 확인", self.COLOR_DEFECT, 3000)
+
+            # 10개만 스캔하여 진행률 확인
+            for i in range(10):
+                defect_barcode = f"TEST-MERGE-{i}-{test_item_code}-{datetime.datetime.now().strftime('%f')}"
+                simulate_scan(defect_barcode, self.scan_entry_defective)
+                time.sleep(0.2)
+
+            self.root.after(0, self.show_status_message, f"테스트: 진행률 {len(self.current_defective_merge_session.scanned_defects)}/48", self.COLOR_DEFECT, 2000)
+            time.sleep(1)
+
+            # 검사 모드로 복귀
+            self.root.after(0, self.toggle_defective_mode)
+            wait_for_state(lambda: self.current_mode == 'standard', "검사 모드 복귀")
+
+        except Exception as e:
+            self.root.after(0, lambda err=e: messagebox.showerror("불량품 통합 테스트 오류", f"테스트 중 오류: {type(err).__name__}: {err}"))
+        finally:
+            self.is_auto_testing = False
+            self.root.after(0, lambda: self.root.title(original_title))
+            self.root.after(100, lambda: messagebox.showinfo("테스트 완료", "불량품 통합 테스트가 완료되었습니다."))
 
 
 if __name__ == "__main__":

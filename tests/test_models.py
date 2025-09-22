@@ -115,7 +115,7 @@ class TestDefectiveMergeSession(unittest.TestCase):
         self.assertEqual(self.session.item_code, "")
         self.assertEqual(self.session.item_name, "")
         self.assertEqual(self.session.item_spec, "")
-        self.assertEqual(self.session.target_quantity, 60)
+        self.assertEqual(self.session.target_quantity, 48)
         self.assertEqual(len(self.session.scanned_defects), 0)
 
     def test_session_with_values(self):

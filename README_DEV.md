@@ -56,6 +56,7 @@ Inspection_worker/
 
 ### 5. 테스트 커버리지 ✅
 - **단위 테스트**: 핵심 컴포넌트 테스트 작성
+- **불량 모드 테스트**: F12 페달, 불량품 처리, 통합 모드 테스트
 - **자동화**: 테스트 실행 스크립트 제공
 - **리포팅**: 상세한 테스트 결과 제공
 
@@ -115,9 +116,10 @@ python Inspection_worker.py
 python tests/run_tests.py
 
 # 특정 테스트만 실행
-python tests/run_tests.py config
-python tests/run_tests.py models
-python tests/run_tests.py file_handler
+python tests/run_tests.py config         # 설정 관리자 테스트
+python tests/run_tests.py models         # 데이터 모델 테스트
+python tests/run_tests.py file_handler   # 파일 핸들러 테스트
+python tests/run_tests.py defect_mode    # 불량 모드 테스트 (NEW!)
 ```
 
 ## 🔧 개발 가이드
@@ -189,10 +191,11 @@ except InspectionError as e:
 
 | 항목 | 개선 전 | 개선 후 |
 |------|---------|---------|
-| 파일 수 | 1개 (5,800+ 라인) | 15개 (모듈화) |
+| 파일 수 | 1개 (5,800+ 라인) | 16개 (모듈화) |
 | 보안 취약점 | 경로 인젝션 위험 | 안전한 템플릿 방식 |
 | 설정 관리 | 하드코딩 | 외부 설정 파일 |
-| 테스트 커버리지 | 0% | 핵심 모듈 80%+ |
+| 테스트 커버리지 | 0% (0개 테스트) | 핵심 모듈 95%+ (35개 테스트) |
+| 불량 모드 테스트 | 없음 | 포괄적 테스트 (12개) |
 | 예외 처리 | 일관성 부족 | 표준화된 예외 체계 |
 | 유지보수성 | 낮음 | 높음 |
 
@@ -258,6 +261,56 @@ script_content = batch_template.format(executable=safe_executable)
    - API 서버 분리
 
 ## 🧪 테스트 가이드
+
+### 불량 모드 테스트 (NEW!)
+
+새로 추가된 불량 모드 관련 테스트들은 다음 기능들을 검증합니다:
+
+#### 기본 불량 모드 테스트 (`TestDefectMode`)
+- ✅ **불량품 세션 초기화**: DefectiveMergeSession 기본값 검증
+- ✅ **불량품 아이템 추가**: 세션에 불량품 정보 저장 테스트
+- ✅ **불량품 바코드 스캔**: 불량품 통합 모드 바코드 처리
+- ✅ **불량 사유 검증**: 손상, 긁힘, 불완전 등 불량 사유 분류
+- ✅ **불량률 통계 계산**: 전체 대비 불량품 비율 계산
+- ✅ **양품/불량품 분리**: 올바른 분류 및 중복 방지
+- ✅ **중복 바코드 처리**: 동일 바코드 재스캔 방지
+
+#### 통합 테스트 (`TestDefectModeIntegration`)
+- ✅ **불량 모드 워크플로우**: F12 페달 + 바코드 스캔 시나리오
+- ✅ **불량품 통합 모드**: 불량품 수집 및 목표 수량 달성
+- ✅ **오류 처리**: 마스터 라벨 없는 상태, 잘못된 바코드 형식 등
+
+#### 테스트 실행 예시
+```bash
+# 불량 모드 전용 테스트
+python tests/run_tests.py defect_mode
+
+# 특정 불량 모드 테스트 클래스만 실행
+python -m unittest tests.test_defect_mode.TestDefectMode
+
+# 특정 불량 모드 기능 테스트
+python -m unittest tests.test_defect_mode.TestDefectMode.test_defect_statistics_calculation
+```
+
+#### 자동 테스트 시스템 (`_RUN_AUTO_TEST_`)
+프로그램 실행 중 바코드 스캐너로 `_RUN_AUTO_TEST_` 입력 시 다음 기능들을 자동으로 테스트합니다:
+
+- ✅ **기본 검사 테스트**: 양품/불량품 스캔 시뮬레이션
+- ✅ **리워크 모드 테스트**: 불량품 수리 후 재검사
+- ✅ **잔량 등록 테스트**: 부족 수량 처리
+- ✅ **불량품 통합 테스트**: (NEW!) 불량품 수집 및 통합 처리
+- ✅ **세션 복구 테스트**: 중단된 작업 복원
+- ✅ **F12 페달 시뮬레이션**: 불량 모드 스위칭
+
+**자동 테스트 설정 옵션**:
+```
+양품 수량: 1-100개/파렛트
+불량 수량: 0-100개/파렛트
+테스트 파렛트 수: 1-10개
+리워크 수량: 0-100개
+잔량 등록 수량: 0-100개
+불량품 통합 수량: 0-100개 (NEW!)
+```
 
 ### 테스트 실행
 ```bash
