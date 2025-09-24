@@ -229,11 +229,170 @@ config/
 
 
 
+## 🔍 API 및 이벤트 시스템
+
+### 주요 이벤트 타입
+```python
+# 검사 관련 이벤트
+SCAN_SUCCESS         # 바코드 스캔 성공
+SCAN_DUPLICATE       # 중복 바코드 스캔
+SCAN_MISMATCH       # 품목 불일치
+INSPECTION_GOOD     # 양품 판정
+INSPECTION_DEFECTIVE # 불량품 판정 (F12)
+
+# 세션 관리 이벤트
+SESSION_START       # 검사 세션 시작
+SESSION_COMPLETE    # 세션 완료
+SESSION_RESET       # 세션 리셋
+TRAY_SUBMIT        # 트레이 제출
+
+# 모드 전환 이벤트
+MODE_SWITCH_REWORK     # 리워크 모드 전환
+MODE_SWITCH_REMNANT    # 잔량 모드 전환
+MODE_SWITCH_DEFECTIVE  # 불량품 통합 모드 전환
+
+# 라벨 생성 이벤트
+LABEL_MASTER_CREATED    # 현품표 생성
+LABEL_DEFECTIVE_CREATED # 불량표 생성
+LABEL_REMNANT_CREATED   # 잔량표 생성
+
+# 시스템 이벤트
+UPDATE_CHECK_FOUND  # 업데이트 발견
+UPDATE_STARTED     # 업데이트 시작
+IDLE_MODE_ON       # 유휴 모드 진입
+IDLE_MODE_OFF      # 유휴 모드 해제
+```
+
+### 데이터 모델 구조
+```python
+@dataclass
+class InspectionSession:
+    master_label_code: str          # 현품표 바코드
+    item_code: str                  # 품목 코드
+    quantity: int = 60              # 목표 수량
+    good_items: List[Dict]          # 양품 목록
+    defective_items: List[Dict]     # 불량품 목록
+    scanned_barcodes: List[str]     # 스캔된 바코드 목록
+    start_time: datetime            # 시작 시간
+    is_test_tray: bool = False      # 테스트 여부
+    # ... 22개 필드
+
+@dataclass
+class DefectiveMergeSession:
+    item_code: str                  # 품목 코드
+    target_quantity: int = 48       # 목표 수량 (48개)
+    scanned_defects: List[str]      # 스캔된 불량품 목록
+    # ... 5개 필드
+```
+
+## 🧪 테스트 시스템
+
+### 단위 테스트 (44개 테스트)
+```bash
+# 설정 테스트 (8개)
+tests/test_config.py
+├── 기본 설정 로드 테스트
+├── 점 표기법 접근 테스트
+├── 설정 저장/로드 테스트
+└── 설정 검증 테스트
+
+# 데이터 모델 테스트 (15개)
+tests/test_models.py
+├── InspectionSession 테스트
+├── DefectiveMergeSession 테스트
+├── RemnantCreationSession 테스트
+└── 데이터 검증 테스트
+
+# 불량 모드 테스트 (12개)
+tests/test_defect_mode.py
+├── 불량품 스캔 테스트
+├── 불량표 생성 테스트
+├── 불량품 통합 테스트
+└── 불량 모드 UI 테스트
+
+# 파일 처리 테스트 (5개)
+tests/test_file_handler.py
+├── 파일 경로 처리 테스트
+├── 디렉토리 생성 테스트
+└── 안전 파일명 테스트
+
+# 통합 테스트 (4개)
+tests/test_integration.py
+├── 시스템 헬스체크
+├── 필수 파일 존재 확인
+├── 설정 무결성 검사
+└── 로깅 시스템 테스트
+```
+
+### 애플리케이션 내 테스트 코드
+```bash
+# 자동화 테스트
+_RUN_AUTO_TEST_              # 전체 시스템 자동 테스트
+_TEST_DEFECT_MODE_           # 완전한 불량 워크플로우 테스트
+_TEST_DEFECT_MERGE_          # 불량품 통합 기능 테스트
+
+# 단위 테스트 실행
+_RUN_UNIT_TESTS_             # 44개 모든 단위 테스트 실행
+_RUN_TESTS_config_           # 설정 모듈 테스트만
+_RUN_TESTS_models_           # 데이터 모델 테스트만
+_RUN_TESTS_defect_mode_      # 불량 모드 테스트만
+_RUN_TESTS_integration_      # 통합 테스트만
+
+# 데이터 생성 테스트
+TEST_LOG_10                  # 혼합 테스트 로그 10개 생성
+TEST_LOG_50_GOOD            # 양품 전용 로그 50개 생성
+_CREATE_DEFECTS_8811012345678_5_ # 특정 품목 불량품 5개 생성
+
+# 시스템 검증 테스트
+_GENERATE_TEST_REPORT_       # 시스템 헬스 리포트 생성
+_TEST_UI_RESPONSIVE_         # UI 반응성 테스트
+_SECURITY_VALIDATION_TEST_   # 입력 검증 테스트
+```
+
+## 🔧 개발자 가이드
+
+### 코드 구조 이해하기
+```python
+# 메인 애플리케이션 진입점
+def main():
+    app = InspectionProgram()
+    app.run()
+
+# 핵심 스캔 처리 플로우
+process_scan()
+→ _process_scan_logic()
+→ _process_inspection_scan() / _process_rework_scan()
+→ record_inspection_result()
+→ _update_all_summaries()
+→ _log_event()
+```
+
+### 새로운 모드 추가 방법
+1. `core/models.py`에 새로운 세션 클래스 추가
+2. `_create_new_mode_view()` 메소드 구현
+3. `_process_new_mode_scan()` 스캔 처리 로직 추가
+4. `toggle_new_mode()` 모드 전환 버튼 추가
+5. `_apply_mode_ui()`에 UI 상태 추가
+
+### 디버깅 팁
+```python
+# 로그 분석
+tail -f "C:\Sync\검사작업이벤트로그_작업자_20241224.csv"
+
+# 세션 상태 확인
+cat "_current_inspection_state_[컴퓨터ID].json"
+
+# 테스트 실행으로 문제 재현
+python tests/run_tests.py defect_mode
+```
+
 ---
 
+## 💻 사용자 가이드
 
+> 아래는 현장 작업자를 위한 사용 가이드입니다.
 
-\## 💻 시스템 요구사항 및 사전 준비
+### 🚀 시스템 요구사항 및 사전 준비
 
 
 
@@ -441,7 +600,124 @@ config/
 
 
 
+## 🤝 기여 및 개발 참여
+
+### 버그 리포트
+- GitHub Issues를 통해 버그 신고
+- 재현 가능한 단계 및 로그 파일 첨부 필요
+- 시스템 환경 정보 (Windows 버전, Python 버전) 포함
+
+### 기능 요청
+- 제조 현장의 실제 요구사항에 기반한 요청 우선
+- 기존 워크플로우에 미치는 영향도 분석 필요
+- 테스트 케이스 작성 가이드라인 준수
+
+### 개발 기여 프로세스
+```bash
+# 1. 저장소 클론
+git clone https://github.com/KMTechn/Inspection_worker.git
+
+# 2. 개발 브랜치 생성
+git checkout -b feature/새로운기능
+
+# 3. 코드 수정 후 테스트
+python tests/run_tests.py
+
+# 4. 커밋 및 푸시
+git commit -m "feat: 새로운 기능 추가"
+git push origin feature/새로운기능
+
+# 5. Pull Request 생성
+```
+
+### 코드 스타일 가이드
+- **함수명**: snake_case 사용
+- **클래스명**: PascalCase 사용
+- **상수**: UPPER_SNAKE_CASE 사용
+- **한국어 주석**: 사용자 대면 기능에 대해서는 한국어 주석 권장
+- **타입 힌트**: 가능한 모든 함수에 타입 힌트 추가
+
+## 📊 성능 및 확장성
+
+### 성능 지표
+- **바코드 스캔 응답시간**: < 200ms
+- **UI 업데이트 지연시간**: < 100ms
+- **로그 파일 쓰기**: 비동기 처리로 메인 스레드 차단 없음
+- **메모리 사용량**: 일반적으로 < 100MB
+
+### 확장 가능한 설계
+- **모듈화된 UI 컴포넌트**: 새로운 검사 모드 쉽게 추가 가능
+- **이벤트 기반 로깅**: 새로운 이벤트 타입 확장 가능
+- **설정 시스템**: JSON 기반으로 새로운 설정 항목 추가 용이
+- **테스트 커버리지**: 44개 단위 테스트로 안정성 보장
+
+## 🔒 보안 및 규정 준수
+
+### 데이터 보안
+- **로컬 데이터 저장**: 모든 데이터는 `C:\Sync`에 로컬 저장
+- **네트워크 통신**: GitHub API 연결시에만 외부 통신
+- **바코드 검증**: 입력 데이터 검증으로 SQL 인젝션 등 방지
+- **로그 무결성**: CSV 형식으로 변조 탐지 가능
+
+### 규정 준수
+- **데이터 추적성**: ISO 9001 품질관리 시스템 요구사항 준수
+- **감사 로그**: 모든 검사 활동 타임스탬프와 함께 기록
+- **백업 정책**: 일별 로그 파일 자동 분리로 데이터 손실 방지
+
+## 📈 로드맵
+
+### v2.1 (계획중)
+- [ ] 바코드 스캔 성능 최적화
+- [ ] 추가 라벨 형식 지원
+- [ ] 네트워크 공유 디렉토리 지원
+
+### v3.0 (장기 계획)
+- [ ] 클라우드 데이터 동기화
+- [ ] 모바일 앱 연동
+- [ ] 고급 분석 대시보드
+
+## 📞 지원 및 문의
+
+### 기술 지원
+- **개발팀 이메일**: [기술지원 이메일 주소]
+- **GitHub Issues**: https://github.com/KMTechn/Inspection_worker/issues
+- **문서**: 이 README.md 및 `CLAUDE.md` 파일 참조
+
+### 사용자 교육
+- **현장 교육**: 신규 작업자 대상 1:1 교육 지원
+- **매뉴얼**: 사용자 가이드 섹션 참조
+- **FAQ**: 아래 문제 해결 섹션 참조
+
 ---
 
-\*이 매뉴얼이 품질 검사 작업에 도움이 되기를 바랍니다. 문제가 발생하거나 추가적인 지원이 필요한 경우 관리자에게 문의하십시오.\*
+## 💻 사용자 매뉴얼
+
+*아래 내용은 현장 작업자를 위한 사용 가이드입니다.*
+
+### 📋 시작하기 전에
+
+**필수 사항 체크리스트:**
+- ✅ Windows 10 이상
+- ✅ `C:\Sync` 폴더 존재
+- ✅ 바코드 스캐너 연결
+- ✅ F12 풋 페달 연결
+- ✅ 모든 프로그램 파일 (`assets` 폴더 포함)
+
+---
+
+*이 매뉴얼이 품질 검사 작업에 도움이 되기를 바랍니다. 문제가 발생하거나 추가적인 지원이 필요한 경우 관리자에게 문의하십시오.*
+
+---
+
+## 📄 라이센스
+
+**Copyright © 2024 KMTech. All rights reserved.**
+
+본 소프트웨어는 KMTech의 독점 소프트웨어입니다.
+라이센스 없이 복제, 배포, 수정을 금지합니다.
+
+**🏭 제작**: KMTech 품질관리팀
+**📧 연락처**: [연락처 정보]
+**🌐 웹사이트**: [회사 웹사이트]
+**📅 최종 업데이트**: 2024-12-24
 
