@@ -8,7 +8,8 @@
       "mcp__serena__write_memory",
       "Bash(python tests:*)",
       "Bash(python:*)",
-      "Bash(del test_defective_functionality.py)"
+      "Bash(del test_defective_functionality.py)",
+      "Read(//c/Sync/**)"
     ],
     "deny": [],
     "ask": []
