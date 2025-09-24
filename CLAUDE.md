@@ -56,7 +56,7 @@ Required packages:
 ### File Structure
 
 ```
-C:\KMTECH Program\Instpection_worker\
+C:\KMTECH Program\Inspection_worker\
 ├── Inspection_worker.py          # Main application (~5000 lines)
 ├── core/
 │   └── models.py                 # Data models using dataclasses
@@ -196,7 +196,7 @@ The system automatically detects test-related events and routes them to separate
 - Checks GitHub releases on startup
 - Downloads and applies updates automatically
 - Version tracking in `CURRENT_VERSION` constant
-- Update URL: `https://github.com/KMTechn/Instpection_worker`
+- Update URL: `https://github.com/KMTechn/Inspection_worker`
 
 ## Debugging and Troubleshooting
 

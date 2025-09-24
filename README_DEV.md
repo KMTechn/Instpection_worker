@@ -71,7 +71,7 @@ Inspection_worker/
     },
     "github": {
         "repo_owner": "KMTechn",
-        "repo_name": "Instpection_worker"
+        "repo_name": "Inspection_worker"
     },
     "inspection": {
         "tray_size": 60,
