@@ -1199,7 +1199,7 @@ class InspectionProgram:
         self.start_defect_merge_button = ttk.Button(button_bar, text="불량 합치기", command=self.start_defective_merge_session)
         self.start_defect_merge_button.pack(side=tk.LEFT, padx=5)
 
-        self.scan_entry_defective = tk.Entry(merge_frame, justify='center', font=(self.DEFAULT_FONT, int(16 * self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_DEFECT, highlightthickness=3, state=tk.DISABLED)
+        self.scan_entry_defective = tk.Entry(merge_frame, justify='center', font=(self.DEFAULT_FONT, int(16 * self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_DEFECT, highlightthickness=3)
         self.scan_entry_defective.grid(row=2, column=0, sticky='ew', ipady=int(8 * self.scale_factor), pady=(5,0))
         self.scan_entry_defective.bind('<Return>', self.process_scan)
 
@@ -1729,7 +1729,6 @@ class InspectionProgram:
 
         self.current_defective_merge_session = DefectiveMergeSession()
 
-        self.scan_entry_defective.config(state=tk.DISABLED)
         self.cancel_defect_merge_button.config(state=tk.DISABLED)
         self.generate_defect_label_button.config(state=tk.DISABLED)
         self.start_defect_merge_button.config(state=tk.NORMAL)
@@ -1765,6 +1764,12 @@ class InspectionProgram:
                     session.item_name = matched_item.get('Item Name', '')
                     session.item_spec = matched_item.get('Spec', '')
                     self.show_status_message(f"품목 '{session.item_name}'의 불량 합치기를 시작합니다.", self.COLOR_SUCCESS)
+
+                    # 첫 스캔 시 버튼 상태 업데이트
+                    self.cancel_defect_merge_button.config(state=tk.NORMAL)
+                    self.generate_defect_label_button.config(state=tk.NORMAL)
+                    self.start_defect_merge_button.config(state=tk.DISABLED)
+
                     self._update_defective_mode_ui()
                 else:
                     self.show_fullscreen_warning("오류", f"품목코드 '{detected_item_code}'의 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
@@ -2772,6 +2777,12 @@ class InspectionProgram:
             session.item_spec = matched_item.get('Spec', '')
             session.target_quantity = 48  # 기본 목표 수량
             self.show_status_message(f"품목 '{session.item_name}' 불량품 통합 세션 자동 시작", self.COLOR_DEFECT, 3000)
+
+            # 첫 스캔 시 버튼 상태 업데이트
+            self.cancel_defect_merge_button.config(state=tk.NORMAL)
+            self.generate_defect_label_button.config(state=tk.NORMAL)
+            self.start_defect_merge_button.config(state=tk.DISABLED)
+
             self._update_defective_mode_ui()
 
         # 품목 일치성 검사
