@@ -1206,11 +1206,11 @@ class InspectionProgram:
 
 
         self.scan_entry_defective = tk.Entry(merge_frame, justify='center', font=(self.DEFAULT_FONT, int(16 * self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_DEFECT, highlightthickness=3)
-        self.scan_entry_defective.grid(row=2, column=0, sticky='ew', ipady=int(8 * self.scale_factor), pady=(5,0))
+        self.scan_entry_defective.grid(row=3, column=0, sticky='ew', ipady=int(8 * self.scale_factor), pady=(5,0))
         self.scan_entry_defective.bind('<Return>', self.process_scan)
 
         scanned_list_frame = ttk.LabelFrame(merge_frame, text="스캔된 바코드 목록", style='TFrame', padding=5)
-        scanned_list_frame.grid(row=3, column=0, sticky='nsew', pady=(10,0))
+        scanned_list_frame.grid(row=4, column=0, sticky='nsew', pady=(10,0))
         scanned_list_frame.grid_rowconfigure(0, weight=1)
         scanned_list_frame.grid_columnconfigure(0, weight=1)
 
@@ -1221,7 +1221,7 @@ class InspectionProgram:
         self.scanned_defects_tree.column('no', width=50, anchor='center')
 
         bottom_button_frame = ttk.Frame(merge_frame, style='TFrame')
-        bottom_button_frame.grid(row=4, column=0, sticky='e', pady=(15, 0))
+        bottom_button_frame.grid(row=5, column=0, sticky='e', pady=(15, 0))
         self.cancel_defect_merge_button = ttk.Button(bottom_button_frame, text="취소", command=self.cancel_defective_merge_session, state=tk.DISABLED)
         self.cancel_defect_merge_button.pack(side=tk.LEFT, padx=5)
         self.generate_defect_label_button = ttk.Button(bottom_button_frame, text="불량표 생성", command=self.generate_defective_label, state=tk.DISABLED)
