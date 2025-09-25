@@ -361,6 +361,7 @@ class InspectionProgram:
         # 불량 처리 모드 관련 변수들
         self.defect_merge_log_file_path: Optional[str] = None
         self.current_defective_merge_session = DefectiveMergeSession()
+        self.direct_defect_session = DefectiveMergeSession()
         self.available_defects: Dict[str, Dict[str, Any]] = {}
 
         self.items_data = self.load_items()
@@ -1183,19 +1184,18 @@ class InspectionProgram:
         # --- 오른쪽 상단: 불량품 합치기 세션 ---
         merge_frame = ttk.LabelFrame(self.defective_view_frame, text="불량 합치기", style='TFrame', padding=10)
         merge_frame.grid(row=0, column=1, sticky='nsew', padx=(10, 20), pady=(10,5))
-        merge_frame.grid_rowconfigure(2, weight=1)
         merge_frame.grid_columnconfigure(0, weight=1)
+        merge_frame.grid_rowconfigure(3, weight=1)
 
         self.defect_session_label = ttk.Label(merge_frame, text="미처리 목록을 더블클릭하거나, 불량품/불량표를 스캔하세요.", style='TLabel')
-        self.defect_session_label.grid(row=0, column=0, columnspan=2, sticky='w')
+        self.defect_session_label.grid(row=0, column=0, sticky='w', pady=(0, 5))
 
         button_bar = ttk.Frame(merge_frame, style='TFrame')
-        button_bar.grid(row=1, column=0, columnspan=2, sticky='ew', pady=5)
+        button_bar.grid(row=1, column=0, sticky='ew', pady=(0, 5))
         ttk.Label(button_bar, text="목표수량:", style='TLabel').pack(side=tk.LEFT)
         self.defect_target_qty_spinbox = ttk.Spinbox(button_bar, from_=1, to=200, increment=1, width=5)
         self.defect_target_qty_spinbox.set(48)
         self.defect_target_qty_spinbox.pack(side=tk.LEFT, padx=(5, 15))
-
         self.start_defect_merge_button = ttk.Button(button_bar, text="불량 합치기", command=self.start_defective_merge_session)
         self.start_defect_merge_button.pack(side=tk.LEFT, padx=5)
 
@@ -1203,15 +1203,15 @@ class InspectionProgram:
         self.scan_entry_defective.grid(row=2, column=0, sticky='ew', ipady=int(8 * self.scale_factor), pady=(5,0))
         self.scan_entry_defective.bind('<Return>', self.process_scan)
 
-        scanned_list_frame = ttk.Frame(merge_frame, style='TFrame')
-        scanned_list_frame.grid(row=3, column=0, sticky='nsew', pady=(10,0))
+        scanned_list_frame = ttk.LabelFrame(merge_frame, text="스캔된 바코드 목록", style='TFrame', padding=5)
+        scanned_list_frame.grid(row=3, column=0, sticky='nsew', pady=(5,0))
         scanned_list_frame.grid_rowconfigure(0, weight=1)
         scanned_list_frame.grid_columnconfigure(0, weight=1)
 
         self.scanned_defects_tree = ttk.Treeview(scanned_list_frame, columns=('no', 'barcode'), show='headings', height=4)
         self.scanned_defects_tree.grid(row=0, column=0, sticky='nsew')
         self.scanned_defects_tree.heading('no', text='No.')
-        self.scanned_defects_tree.heading('barcode', text='스캔된 불량품 바코드')
+        self.scanned_defects_tree.heading('barcode', text='바코드')
         self.scanned_defects_tree.column('no', width=50, anchor='center')
 
         bottom_button_frame = ttk.Frame(merge_frame, style='TFrame')
@@ -1225,12 +1225,29 @@ class InspectionProgram:
         direct_defect_frame = ttk.LabelFrame(self.defective_view_frame, text="불량 즉시 등록", style='TFrame', padding=10)
         direct_defect_frame.grid(row=2, column=1, sticky='nsew', padx=(10, 20), pady=(5,10))
         direct_defect_frame.grid_columnconfigure(0, weight=1)
-
-        ttk.Button(direct_defect_frame, text="불량 입력하기").pack(pady=(0,5))
+        direct_defect_frame.grid_rowconfigure(1, weight=1)
 
         self.scan_entry_direct_defect = tk.Entry(direct_defect_frame, justify='center', font=(self.DEFAULT_FONT, int(16 * self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_DEFECT, highlightthickness=3)
-        self.scan_entry_direct_defect.pack(fill=tk.X, ipady=int(8 * self.scale_factor))
+        self.scan_entry_direct_defect.grid(row=0, column=0, sticky='ew', ipady=int(8 * self.scale_factor), pady=(0, 5))
         self.scan_entry_direct_defect.bind('<Return>', self._on_direct_defect_scan)
+
+        direct_scanned_list_frame = ttk.LabelFrame(direct_defect_frame, text="스캔된 불량품 바코드", style='TFrame', padding=5)
+        direct_scanned_list_frame.grid(row=1, column=0, sticky='nsew', pady=(5,0))
+        direct_scanned_list_frame.grid_rowconfigure(0, weight=1)
+        direct_scanned_list_frame.grid_columnconfigure(0, weight=1)
+
+        self.scanned_direct_defects_tree = ttk.Treeview(direct_scanned_list_frame, columns=('no', 'barcode'), show='headings', height=4)
+        self.scanned_direct_defects_tree.grid(row=0, column=0, sticky='nsew')
+        self.scanned_direct_defects_tree.heading('no', text='No.')
+        self.scanned_direct_defects_tree.heading('barcode', text='바코드')
+        self.scanned_direct_defects_tree.column('no', width=50, anchor='center')
+
+        direct_bottom_button_frame = ttk.Frame(direct_defect_frame, style='TFrame')
+        direct_bottom_button_frame.grid(row=2, column=0, sticky='e', pady=(10, 0))
+        self.cancel_direct_defect_button = ttk.Button(direct_bottom_button_frame, text="취소", command=self._cancel_direct_defect_session)
+        self.cancel_direct_defect_button.pack(side=tk.LEFT, padx=5)
+        self.generate_direct_defect_label_button = ttk.Button(direct_bottom_button_frame, text="불량표 생성", command=self._generate_direct_defect_label)
+        self.generate_direct_defect_label_button.pack(side=tk.LEFT, padx=5)
 
     def _on_direct_defect_scan(self, event=None):
         """'불량 즉시 등록' 입력창에서 스캔 이벤트를 처리합니다."""
@@ -1241,40 +1258,76 @@ class InspectionProgram:
         if not barcode:
             return
 
-        self._record_manual_defect(barcode)
-        # 포커스를 다시 해당 입력창으로 돌려 연속적인 스캔을 쉽게 만듭니다.
-        self.scan_entry_direct_defect.focus_set()
+        session = self.direct_defect_session
 
-    def _record_manual_defect(self, barcode: str):
-        """팝업에서 입력된 바코드를 불량품으로 기록합니다."""
-        # 1. 바코드에서 품목 코드 추출
-        detected_item_code = None
-        for item in self.items_data:
-            item_code = item.get('Item Code')
-            if item_code and item_code in barcode:
-                detected_item_code = item_code
-                break
-
-        if not detected_item_code:
-            messagebox.showerror("오류", "바코드에서 유효한 품목 코드를 찾을 수 없습니다.")
+        # 품목 코드 자동 감지
+        try:
+            detected_item_code = next(
+                item['Item Code'] for item in self.items_data if item.get('Item Code') and item['Item Code'] in barcode
+            )
+        except StopIteration:
+            self.show_fullscreen_warning("오류", "바코드에서 유효한 품목 코드를 찾을 수 없습니다.", self.COLOR_DEFECT)
             return
 
-        # 2. 품목 정보 가져오기
-        matched_item = next((item for item in self.items_data if item['Item Code'] == detected_item_code), None)
-        item_name = matched_item.get('Item Name', '알 수 없음') if matched_item else '알 수 없음'
+        # 첫 스캔 시 세션 초기화
+        if not session.item_code:
+            matched_item = next((item for item in self.items_data if item['Item Code'] == detected_item_code), None)
+            session.item_code = detected_item_code
+            session.item_name = matched_item.get('Item Name', '알 수 없음')
+            session.item_spec = matched_item.get('Spec', '')
+        # 다른 품목 스캔 시 오류
+        elif session.item_code != detected_item_code:
+            self.show_fullscreen_warning("품목 불일치", f"현재 등록 중인 품목({session.item_name})과 다른 품목입니다.", self.COLOR_DEFECT)
+            return
 
-        # 3. 불량 이벤트 기록
-        self._log_event('INSPECTION_DEFECTIVE', detail={
-            'barcode': barcode,
-            'item_code': detected_item_code,
-            'item_name': item_name,
-            'direct_scan': True,  # 수동 입력임을 표시
-            'scan_time': datetime.datetime.now().isoformat()
-        })
+        # 중복 스캔 방지
+        if barcode in session.scanned_defects:
+            self.show_fullscreen_warning("중복 스캔", f"이미 등록된 바코드입니다: {barcode}", self.COLOR_DEFECT)
+            return
 
-        # 4. UI 새로고침
-        self.show_status_message(f"'{item_name}' 불량품이 등록되었습니다.", self.COLOR_SUCCESS)
-        self.load_all_defective_items()
+        session.scanned_defects.append(barcode)
+        self._update_direct_defect_list()
+        self.scan_entry_direct_defect.focus_set()
+
+    def _update_direct_defect_list(self):
+        """'불량 즉시 등록'의 스캔된 목록 Treeview를 업데이트합니다."""
+        tree = self.scanned_direct_defects_tree
+        for i in tree.get_children():
+            tree.delete(i)
+
+        for i, barcode in enumerate(self.direct_defect_session.scanned_defects):
+            tree.insert('', 'end', values=(i + 1, barcode))
+
+    def _cancel_direct_defect_session(self):
+        """'불량 즉시 등록' 세션을 취소합니다."""
+        if self.direct_defect_session.scanned_defects:
+            if not messagebox.askyesno("취소 확인", "진행중인 불량 즉시 등록을 취소하시겠습니까?"):
+                return
+
+        self.direct_defect_session = DefectiveMergeSession()
+        self._update_direct_defect_list()
+        self.show_status_message("불량 즉시 등록이 취소되었습니다.", self.COLOR_TEXT_SUBTLE)
+
+    def _generate_direct_defect_label(self):
+        """'불량 즉시 등록' 세션으로 불량표를 생성합니다."""
+        session = self.direct_defect_session
+        if not session.scanned_defects:
+            messagebox.showwarning("오류", "스캔된 불량품이 없습니다.")
+            return
+
+        # 임시로 메인 불량 처리 세션을 교체하여 기존 로직 재활용
+        original_session = self.current_defective_merge_session
+        self.current_defective_merge_session = session
+
+        try:
+            defect_box_id = self.generate_defective_label()
+            if defect_box_id:
+                # 성공적으로 생성되면 즉시 등록 세션 초기화
+                self.direct_defect_session = DefectiveMergeSession()
+                self._update_direct_defect_list()
+        finally:
+            # 원래 세션으로 복원
+            self.current_defective_merge_session = original_session
 
     def on_available_defect_double_click(self, event=None):
         """'미처리 불량품' 목록의 항목을 더블클릭하면 해당 품목의 모든 미처리 불량품을 포함하는 합치기 세션을 시작합니다."""
@@ -1645,6 +1698,9 @@ class InspectionProgram:
 
         for i, barcode in enumerate(session.scanned_defects):
             self.scanned_defects_tree.insert('', 'end', values=(i + 1, barcode))
+
+        # 즉시 등록 목록 업데이트
+        self._update_direct_defect_list()
 
     def start_defective_merge_session(self):
         """'불량 합치기 시작' 버튼 클릭 시 호출됩니다. 품목 선택 여부와 관계없이 빈 세션을 생성합니다."""
