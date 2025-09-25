@@ -4,7 +4,7 @@ import csv
 import datetime
 import os
 import sys
-import threading 
+import threading
 import time
 import json
 import re
@@ -655,8 +655,6 @@ class InspectionProgram:
         if not os.path.exists(self.defect_merge_log_file_path):
                 self._log_event('DEFECT_MERGE_LOG_FILE_CREATED', detail={'path': self.defect_merge_log_file_path})
 
-        # 모든 로그를 동일한 위치에 저장 (테스트와 실제 구분 없음)
-
         self.total_tray_count = 0
         self.completed_tray_times = []
         self.work_summary = {}
@@ -795,7 +793,6 @@ class InspectionProgram:
 
     def _restore_session_from_state(self, state: Dict[str, Any]):
         state.pop('worker_name', None)
-        state.pop('is_defective_only_session', None) 
         
         state['start_time'] = datetime.datetime.fromisoformat(state['start_time']) if state.get('start_time') else None
         session_fields = InspectionSession.__dataclass_fields__
@@ -1707,8 +1704,7 @@ class InspectionProgram:
                 self.show_status_message(f"품목 '{session.item_name}' 불량품 통합 세션 자동 시작", self.COLOR_DEFECT, 3000)
                 self._update_defective_mode_ui()
             else:
-                if True:
-                    self.show_fullscreen_warning("오류", "바코드에서 품목 코드를 인식할 수 없습니다.\n먼저 처리할 품목을 선택하거나 품목 코드가 포함된 바코드를 스캔해주세요.", self.COLOR_DEFECT)
+                self.show_fullscreen_warning("오류", "바코드에서 품목 코드를 인식할 수 없습니다.\n먼저 처리할 품목을 선택하거나 품목 코드가 포함된 바코드를 스캔해주세요.", self.COLOR_DEFECT)
                 return
 
         # 바코드에 현재 세션의 품목 코드가 포함되어 있는지 확인
@@ -1806,8 +1802,7 @@ class InspectionProgram:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(defect_data, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            if True:
-                messagebox.showerror("저장 오류", f"불량표 데이터 파일 저장 중 오류가 발생했습니다: {e}")
+            messagebox.showerror("저장 오류", f"불량표 데이터 파일 저장 중 오류가 발생했습니다: {e}")
             return
 
         self._log_event('DEFECT_MERGE_COMPLETE', detail=defect_data)
@@ -2002,14 +1997,10 @@ class InspectionProgram:
         if qr_data.strip().startswith('{') and qr_data.strip().endswith('}'):
             try:
                 parsed = json.loads(qr_data)
-                if False:
-                    print(f"[DEBUG] JSON 파싱 성공: {parsed}")
                 if 'CLC' in parsed:
                     return parsed
                 return None
-            except json.JSONDecodeError as e:
-                if False:
-                    print(f"[DEBUG] JSON 파싱 실패: {e}, QR 데이터: {qr_data}")
+            except json.JSONDecodeError:
                 pass
 
         # 기존 형식 (=, |로 구분) 처리
@@ -2023,6 +2014,8 @@ class InspectionProgram:
             return None
 
     def _complete_session_logic_only(self, session: InspectionSession):
+        is_test = False
+
         if session.master_label_code:
             self.completed_master_labels.add(session.master_label_code)
 
@@ -2224,7 +2217,6 @@ class InspectionProgram:
         parsed_data = self._parse_new_format_qr(barcode)
         item_code_length = config.get('inspection.item_code_length', 13)
 
-        # 자동 테스트 모드에서는 TEST- 바코드 허용
         if parsed_data or barcode.upper().startswith("SPARE-") or len(barcode) < item_code_length:
             self.show_fullscreen_warning("스캔 오류", "잔량 등록 모드에서는 제품 바코드만 스캔할 수 있습니다.", self.COLOR_DEFECT)
             return
@@ -2258,7 +2250,7 @@ class InspectionProgram:
             self.remnant_item_label.config(text=f"등록 품목: {self.current_remnant_session.item_name} ({self.current_remnant_session.item_code})")
         
         elif self.current_remnant_session.item_code != item_code_from_barcode:
-            self.show_fullscreen_warning("품목 불일치", f"다른 종류의 품목은 함께 등록할 수 없습니다.\n(현재 품목: {self.current_session.item_code})", self.COLOR_DEFECT)
+            self.show_fullscreen_warning("품목 불일치", f"다른 종류의 품목은 함께 등록할 수 없습니다.\n(현재 품목: {self.current_remnant_session.item_code})", self.COLOR_DEFECT)
             return
         
         if self.success_sound: self.success_sound.play()
@@ -2660,15 +2652,13 @@ class InspectionProgram:
                 worker_name=self.worker_name,
                 creation_date=now.strftime('%Y-%m-%d %H:%M:%S')
             )
-            if sys.platform == "win32" and not self.is_auto_testing:
+            if sys.platform == "win32":
                 os.startfile(image_path)
             
-            if not self.is_auto_testing:
-                messagebox.showinfo("초과분 잔량 생성 완료", f"현품표 작업을 완료하고 남은 {len(barcodes)}개의 제품으로\n새로운 잔량표를 생성했습니다.\n\n신규 잔량 ID: {new_remnant_id}")
+            messagebox.showinfo("초과분 잔량 생성 완료", f"현품표 작업을 완료하고 남은 {len(barcodes)}개의 제품으로\n새로운 잔량표를 생성했습니다.\n\n신규 잔량 ID: {new_remnant_id}")
 
         except Exception as e:
-            if not self.is_auto_testing:
-                messagebox.showwarning("이미지 생성 실패", f"새 잔량 라벨 이미지 생성에 실패했습니다: {e}")
+            messagebox.showwarning("이미지 생성 실패", f"새 잔량 라벨 이미지 생성에 실패했습니다: {e}")
 
     def _add_defective_label_to_current_session(self, defect_qr_data: Dict[str, Any]):
         """불량표 QR 코드를 스캔했을 때 불량품 통합 세션에 추가하는 함수"""
@@ -3448,8 +3438,7 @@ class InspectionProgram:
             # 최신 파일부터 검색하기 위해 역순으로 정렬합니다.
             all_log_files.sort(reverse=True)
         except FileNotFoundError:
-            if True:
-                messagebox.showerror("오류", f"로그 폴더 '{self.save_folder}'를 찾을 수 없습니다.")
+            messagebox.showerror("오류", f"로그 폴더 '{self.save_folder}'를 찾을 수 없습니다.")
             self.cancel_master_label_replacement()
             return
 
@@ -3465,8 +3454,7 @@ class InspectionProgram:
             self.replacement_context.update(found_log_info) # 찾은 파일 경로, 내용 등을 컨텍스트에 추가
             self._compare_quantities_and_proceed() # 수량 비교 및 추가/제외 스캔 단계로 이동
         else:
-            if True:
-                messagebox.showwarning("기록 없음", f"모든 로컬 로그 파일에서 해당 현품표({old_label})의 완료 기록을 찾을 수 없습니다.")
+            messagebox.showwarning("기록 없음", f"모든 로컬 로그 파일에서 해당 현품표({old_label})의 완료 기록을 찾을 수 없습니다.")
             self.cancel_master_label_replacement()
 
 
