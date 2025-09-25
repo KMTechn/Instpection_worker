@@ -12,7 +12,7 @@ The application follows a modular architecture with a single-file main applicati
 
 ### Main Application Structure
 
-- **`Inspection_worker.py`**: Monolithic main application (~5000 lines) containing:
+- **`Inspection_worker.py`**: Monolithic main application (~4200 lines) containing:
   - `InspectionWorkerGUI` class: Core UI and business logic
   - `ConfigManager` class: Application configuration management
   - Event handlers for barcode scanning, UI interactions, and mode switching
@@ -23,7 +23,7 @@ The application follows a modular architecture with a single-file main applicati
 
 - **`InspectionSession`**: Standard quality inspection workflow data
   - Tracks good/defective items, barcode scanning history, timing metrics
-  - Support for test sessions, partial submissions, and session recovery
+  - Support for partial submissions and session recovery
 - **`RemnantCreationSession`**: Leftover product label creation
 - **`DefectiveMergeSession`**: Bulk defective product consolidation (target: 48 units)
 
@@ -51,7 +51,6 @@ The application follows a modular architecture with a single-file main applicati
 - Defective merge mode for bulk defective product handling
 - Auto-save and recovery of work sessions
 - Automatic updates from GitHub releases
-- Comprehensive test code system with special barcode commands
 
 ### Multi-Mode Operation
 
@@ -79,18 +78,21 @@ Required packages:
 ### File Structure
 
 ```
-C:\KMTECH Program\Inspection_worker\
-├── Inspection_worker.py          # Main application (~5000 lines)
+C:\company\program\Inspection_worker\
+├── Inspection_worker.py          # Main application (~4200 lines)
 ├── core/
+│   ├── __init__.py
 │   └── models.py                 # Data models using dataclasses
-├── tests/                        # Unit test suite (44 tests)
-│   ├── run_tests.py             # Test runner
-│   ├── test_models.py           # Data model tests
-│   ├── test_defect_mode.py      # Defect mode functionality tests
-│   ├── test_config.py           # Configuration tests
-│   ├── test_file_handler.py     # File handling tests
-│   └── test_integration.py      # Integration tests
-├── TEST_CODE.txt                # Complete test code documentation
+├── ui/
+│   ├── __init__.py
+│   ├── base_ui.py               # Base UI component classes
+│   └── components.py            # Specialized UI components
+├── utils/
+│   ├── __init__.py
+│   ├── file_handler.py          # File operations
+│   ├── logger.py                # Event logging system
+│   └── exceptions.py            # Custom exceptions
+├── TEST_CODE.txt                # Manual testing guide with sample barcodes
 ├── requirements.txt             # Python dependencies
 ├── assets/                      # Required assets
 │   ├── Item.csv                # Product database
@@ -131,8 +133,11 @@ C:\KMTECH Program\Inspection_worker\
 # Install dependencies
 pip install -r requirements.txt
 
-# Verify critical directories exist
-mkdir -p "C:\Sync"
+# Verify critical directories exist (Windows)
+mkdir "C:\Sync"
+
+# Verify critical directories exist (Unix-like)
+mkdir -p "/c/Sync"
 ```
 
 ### Running the Application
@@ -141,43 +146,17 @@ mkdir -p "C:\Sync"
 # Run main application
 python Inspection_worker.py
 
-# Run with debug output (if implemented)
-python Inspection_worker.py --debug
-```
-
-### Testing
-
-**Unit Tests** (44 tests across 5 modules):
-```bash
-# Run all tests
-python tests/run_tests.py
-
-# Run specific test modules
-python tests/run_tests.py config      # Configuration tests
-python tests/run_tests.py models      # Data model tests
-python tests/run_tests.py file_handler # File handling tests
-python tests/run_tests.py defect_mode  # Defect mode functionality
-python tests/run_tests.py integration  # Integration & system health tests
-
-# Run single test file directly
-python -m unittest tests.test_models.TestInspectionSession
-```
-
-**In-Application Testing** (via special barcodes):
-```bash
-# Available test codes (scan or type in application):
-_RUN_UNIT_TESTS_           # Execute all 44 unit tests
-_RUN_TESTS_[module]_       # Run specific test modules
-_RUN_AUTO_TEST_            # Full system simulation
-_TEST_DEFECT_MODE_         # Complete defective workflow test
-_GENERATE_TEST_REPORT_     # System health report
+# Check syntax
+python -m py_compile Inspection_worker.py
 ```
 
 ### Code Analysis
 
 ```bash
-# Check Python syntax
+# Check Python syntax for all files
 python -m py_compile Inspection_worker.py
+python -m py_compile core/models.py
+find . -name "*.py" -exec python -m py_compile {} \;
 
 # Find TODO/FIXME comments
 grep -r "TODO\|FIXME" . --include="*.py"
@@ -185,24 +164,6 @@ grep -r "TODO\|FIXME" . --include="*.py"
 # Count lines of code
 find . -name "*.py" -exec wc -l {} + | tail -1
 ```
-
-### Test Code System
-
-The application includes special barcode commands for testing (all test codes only work in standard inspection mode):
-
-**Automated Testing:**
-- `_RUN_AUTO_TEST_`: Comprehensive system simulation
-- `_TEST_DEFECT_MODE_`: Complete defective workflow testing (2 master label sessions + defect merge + mixed barcode scanning)
-- `_TEST_DEFECT_MERGE_`: Defective merge functionality testing
-
-**Unit Tests:**
-- `_RUN_UNIT_TESTS_`: Execute all 44 unit tests
-- `_RUN_TESTS_[module]_`: Run specific test modules
-
-**Data Generation:**
-- `TEST_LOG_[quantity]`: Generate mixed test logs
-- `TEST_LOG_[quantity]_GOOD`: Generate good-only test logs
-- `_CREATE_DEFECTS_[item]_[qty]_`: Create test defect data
 
 ### Configuration
 
@@ -250,7 +211,8 @@ Session State Update → UI Refresh → Event Logging → Audio Feedback
 ```
 
 **Key Functions in `Inspection_worker.py`**:
-- `_on_scan()`: Main barcode processing entry point
+- `process_scan()`: Main barcode processing entry point
+- `_process_scan_logic()`: Core barcode processing logic
 - `_apply_mode_ui()`: Mode-specific UI state management
 - `_process_*_scan()`: Mode-specific barcode handling methods
 - `_update_*_display()`: UI data synchronization methods
@@ -292,8 +254,6 @@ Session State Update → UI Refresh → Event Logging → Audio Feedback
 - `불량표_[DEFECT-ID]_[timestamp].png`: Defective labels (manual or auto-generated)
 - `잔량표_[SPARE-ID]_[timestamp].png`: Remnant labels for leftover products
 
-**Important Note**: Test events are now processed in the same way as production events for proper validation. All logs go to the main C:\Sync folder.
-
 ### Mode System Architecture
 
 **UI Mode Management** (`_apply_mode_ui` function):
@@ -302,7 +262,6 @@ Session State Update → UI Refresh → Event Logging → Audio Feedback
 - Mode-specific color schemes
 
 **Mode Validation**:
-- Test codes restricted to standard inspection mode only
 - Mode-specific functionality isolation
 - Safe mode transitions
 
@@ -357,6 +316,25 @@ InspectionError (base)
 - Update repository: `https://github.com/KMTechn/Inspection_worker`
 - Graceful fallback if update check fails
 
+## Manual Testing
+
+### Sample Test Data
+
+The `TEST_CODE.txt` file contains comprehensive manual testing guidance including:
+- Sample master labels (현품표) for 4 different product types
+- 80 sample product barcodes (20 per product type)
+- 7 detailed test scenarios covering all application modes
+- Step-by-step testing procedures
+- Checklist for UI, functionality, file generation, and performance testing
+
+### Testing Process
+
+1. **Environment Setup**: Ensure C:\Sync exists and Item.csv contains test products
+2. **Manual Login**: Login with worker name and navigate to work screen
+3. **Barcode Testing**: Use sample codes from TEST_CODE.txt
+4. **Mode Testing**: Test all modes (inspection/rework/remnant/defective merge)
+5. **File Verification**: Check generated logs and labels in C:\Sync
+
 ## Debugging and Troubleshooting
 
 ### Common Issues
@@ -365,18 +343,61 @@ InspectionError (base)
 - **Missing assets/Item.csv**: Cannot load product database
 - **Audio initialization errors**: Check pygame mixer initialization
 - **Barcode scanner not working**: Test in notepad first, ensure USB connection
-- **Test codes not working**: Ensure you're in standard inspection mode
 
 ### Log Analysis
 
-Event logs in C:\Sync contain detailed timestamps and event types for debugging work session issues. Test logs are automatically separated into the TEST subfolder.
+Event logs in C:\Sync contain detailed timestamps and event types for debugging work session issues.
 
 ### UI Scaling Issues
 
 If UI elements are too small/large, check `scale_factor` in inspection_settings.json or use Ctrl+mouse wheel during runtime.
 
-### Mode-Specific Debugging
+### Master Label Format Support
 
-- Use `_TEST_UI_RESPONSIVE_` to test UI scaling and layout
-- Use `_SECURITY_VALIDATION_TEST_` for input validation testing
-- Use `_GENERATE_TEST_REPORT_` for comprehensive system health reports
+The system supports multiple master label formats for backward compatibility:
+
+**1. New Production Format** (latest - 신형 현품표):
+```
+PHS=1|CLC=AAA2270730200|WID=MFG-WO-2025-00047|SPC=A14|FPB=A146000306|OBD=2025-09-16|PJT=KMC_LHD|QT=60
+```
+Fields:
+- `PHS`: Phase/Stage identifier
+- `CLC`: Item code (actual product code)
+- `WID`: Work order ID (manufacturing work order)
+- `SPC`: Specification code
+- `FPB`: Finished product batch number
+- `OBD`: Outbound date (YYYY-MM-DD format)
+- `PJT`: Product type (KMC_LHD, KMC_RHD, HMC_LHD, HMC_RHD)
+- `QT`: Target quantity
+
+**2. Legacy Production Format** (existing - 구형 현품표):
+```
+CLC=item_code|WID=work_order_id|QT=quantity
+```
+Fields:
+- `CLC`: Item code
+- `WID`: Work order ID
+- `QT`: Target quantity
+- Other fields may be present but optional
+
+**3. JSON Format** (if applicable):
+```json
+{"CLC": "item_code", "WID": "work_order_id", "QT": 60, ...}
+```
+
+**4. Test Format** (manual testing - TEST_CODE.txt):
+```
+CLC=INSPECTION|WID=TEST-KMC-LHD-001|ITEM=AAA2270730100|QTY=10|DATE=20250925
+```
+Fields:
+- `CLC`: Always "INSPECTION" for test mode
+- `WID`: Test work order ID
+- `ITEM`: Test item code
+- `QTY`: Test quantity (smaller than production)
+- `DATE`: Test date (YYYYMMDD format)
+
+**Format Detection Rules:**
+- System automatically detects format based on field presence
+- Requires minimum: `CLC` and `WID` fields for all formats
+- Quantity field: `QT` (production) or `QTY` (test) - both supported
+- All formats can coexist in production environment

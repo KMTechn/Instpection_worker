@@ -27,7 +27,6 @@ class InspectionSession:
     stopwatch_seconds: float = 0.0
     start_time: Optional[datetime.datetime] = None
     has_error_or_reset: bool = False
-    is_test_tray: bool = False
     is_partial_submission: bool = False
     is_restored_session: bool = False
     is_remnant_session: bool = False

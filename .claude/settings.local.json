@@ -9,7 +9,10 @@
       "Bash(python tests:*)",
       "Bash(python:*)",
       "Bash(del test_defective_functionality.py)",
-      "Read(//c/Sync/**)"
+      "Read(//c/Sync/**)",
+      "Bash(find:*)",
+      "Bash(timeout 30 python:*)",
+      "Bash(del validate_test_codes.py)"
     ],
     "deny": [],
     "ask": []
