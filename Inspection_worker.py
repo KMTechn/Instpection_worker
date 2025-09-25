@@ -1141,33 +1141,43 @@ class InspectionProgram:
         ttk.Button(remnant_button_frame, text="✅ 잔량표 생성", command=self._generate_remnant_label).pack(side=tk.LEFT, padx=10)
 
     def _create_defective_view(self, container):
-        """불량 처리 모드의 UI를 생성합니다."""
+        """불량 처리 모드의 UI를 생성합니다. '미처리'와 '처리완료' 목록을 분리된 Treeview로 표시합니다."""
         self.defective_view_frame = ttk.Frame(container, style='TFrame')
         self.defective_view_frame.grid(row=0, column=0, sticky='nsew')
         self.defective_view_frame.grid_columnconfigure(0, weight=1)
         self.defective_view_frame.grid_columnconfigure(1, weight=1)
         self.defective_view_frame.grid_rowconfigure(1, weight=1)
 
-        # --- 왼쪽: 전체 불량 현황 ---
+        # --- 왼쪽: 전체 불량 현황 (미처리/처리완료 분리) ---
         left_frame = ttk.Frame(self.defective_view_frame, style='TFrame')
         left_frame.grid(row=0, column=0, rowspan=2, sticky='nsew', padx=(20, 10), pady=10)
         left_frame.grid_rowconfigure(1, weight=1)
+        left_frame.grid_rowconfigure(3, weight=1)
         left_frame.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(left_frame, text="처리 가능 불량품 목록 (전체 작업자)", style='TLabel', font=(self.DEFAULT_FONT, int(12 * self.scale_factor), 'bold')).grid(row=0, column=0, sticky='w')
+        # 미처리 불량품 목록
+        ttk.Label(left_frame, text="미처리 불량품 (더블클릭하여 합치기 시작)", style='TLabel', font=(self.DEFAULT_FONT, int(12 * self.scale_factor), 'bold')).grid(row=0, column=0, sticky='w')
+        unprocessed_cols = ('item_name', 'item_code', 'count')
+        self.unprocessed_defects_tree = ttk.Treeview(left_frame, columns=unprocessed_cols, show='headings')
+        self.unprocessed_defects_tree.grid(row=1, column=0, sticky='nsew', pady=(5, 10))
+        self.unprocessed_defects_tree.heading('item_name', text='품목명')
+        self.unprocessed_defects_tree.heading('item_code', text='품목코드')
+        self.unprocessed_defects_tree.heading('count', text='수량')
+        self.unprocessed_defects_tree.column('item_code', width=120, anchor='center')
+        self.unprocessed_defects_tree.column('count', width=60, anchor='center')
+        self.unprocessed_defects_tree.bind('<Double-1>', self.on_available_defect_double_click)
 
-        cols = ('item_name', 'item_code', 'unprocessed', 'processed')
-        self.available_defects_tree = ttk.Treeview(left_frame, columns=cols, show='headings')
-        self.available_defects_tree.grid(row=1, column=0, sticky='nsew')
-        self.available_defects_tree.heading('item_name', text='품목명')
-        self.available_defects_tree.heading('item_code', text='품목코드')
-        self.available_defects_tree.heading('unprocessed', text='미처리')
-        self.available_defects_tree.heading('processed', text='처리완료')
-        self.available_defects_tree.column('item_code', width=120, anchor='center')
-        self.available_defects_tree.column('unprocessed', width=60, anchor='center')
-        self.available_defects_tree.column('processed', width=60, anchor='center')
-
-        self.available_defects_tree.tag_configure('processed_item', foreground='gray')
+        # 처리완료 불량품 목록
+        ttk.Label(left_frame, text="처리완료 불량품", style='TLabel', font=(self.DEFAULT_FONT, int(12 * self.scale_factor), 'bold')).grid(row=2, column=0, sticky='w', pady=(10, 0))
+        processed_cols = ('item_name', 'item_code', 'count')
+        self.processed_defects_tree = ttk.Treeview(left_frame, columns=processed_cols, show='headings')
+        self.processed_defects_tree.grid(row=3, column=0, sticky='nsew', pady=(5, 0))
+        self.processed_defects_tree.heading('item_name', text='품목명')
+        self.processed_defects_tree.heading('item_code', text='품목코드')
+        self.processed_defects_tree.heading('count', text='수량')
+        self.processed_defects_tree.column('item_code', width=120, anchor='center')
+        self.processed_defects_tree.column('count', width=60, anchor='center')
+        self.processed_defects_tree.tag_configure('processed_item', foreground='gray')
 
         # --- 오른쪽: 불량품 합치기 세션 ---
         right_frame = ttk.Frame(self.defective_view_frame, style='TFrame')
@@ -1179,25 +1189,28 @@ class InspectionProgram:
         session_ctrl_frame.grid(row=0, column=0, sticky='ew', pady=(0, 10))
         session_ctrl_frame.grid_columnconfigure(1, weight=1)
 
-        self.defect_session_label = ttk.Label(session_ctrl_frame, text="[불량 합치기] 버튼을 누르거나, 불량품/불량표를 스캔하세요.", style='TLabel')
+        self.defect_session_label = ttk.Label(session_ctrl_frame, text="미처리 목록을 더블클릭하거나, 불량품/불량표를 스캔하세요.", style='TLabel')
         self.defect_session_label.grid(row=0, column=0, columnspan=2, sticky='w')
 
-        ttk.Label(session_ctrl_frame, text="목표수량:", style='TLabel').grid(row=1, column=0, sticky='w', pady=5)
-        self.defect_target_qty_spinbox = ttk.Spinbox(session_ctrl_frame, from_=1, to=200, increment=1, width=5)
-        # 불량품 통합 모드 기본 목표 수량: 48개
+        # 목표수량, 불량 합치기, 불량 입력하기 버튼
+        button_bar = ttk.Frame(session_ctrl_frame, style='TFrame')
+        button_bar.grid(row=1, column=0, columnspan=2, sticky='ew', pady=5)
+        ttk.Label(button_bar, text="목표수량:", style='TLabel').pack(side=tk.LEFT)
+        self.defect_target_qty_spinbox = ttk.Spinbox(button_bar, from_=1, to=200, increment=1, width=5)
         self.defect_target_qty_spinbox.set(48)
-        self.defect_target_qty_spinbox.grid(row=1, column=1, sticky='w', pady=5)
+        self.defect_target_qty_spinbox.pack(side=tk.LEFT, padx=(5, 15))
 
-        self.start_defect_merge_button = ttk.Button(session_ctrl_frame, text="불량 합치기", command=self.start_defective_merge_session)
-        self.start_defect_merge_button.grid(row=2, column=0, pady=5, sticky='w')
+        self.start_defect_merge_button = ttk.Button(button_bar, text="새 합치기 세션", command=self.start_defective_merge_session)
+        self.start_defect_merge_button.pack(side=tk.LEFT, padx=5)
+        self.add_defect_button = ttk.Button(button_bar, text="개별 불량 입력", command=self.show_add_defect_popup)
+        self.add_defect_button.pack(side=tk.LEFT, padx=5)
 
-        self.add_defect_button = ttk.Button(session_ctrl_frame, text="불량 입력하기", command=self.show_add_defect_popup)
-        self.add_defect_button.grid(row=2, column=1, pady=5, padx=5, sticky='w')
-
+        # 스캔 입력창
         self.scan_entry_defective = tk.Entry(right_frame, justify='center', font=(self.DEFAULT_FONT, int(20 * self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_DEFECT, highlightthickness=3, state=tk.DISABLED)
         self.scan_entry_defective.grid(row=1, column=0, sticky='ew', ipady=int(10 * self.scale_factor))
         self.scan_entry_defective.bind('<Return>', self.process_scan)
 
+        # 스캔된 불량품 목록
         scanned_list_frame = ttk.Frame(right_frame, style='TFrame')
         scanned_list_frame.grid(row=2, column=0, sticky='nsew', pady=(10,0))
         scanned_list_frame.grid_rowconfigure(0, weight=1)
@@ -1209,16 +1222,13 @@ class InspectionProgram:
         self.scanned_defects_tree.heading('barcode', text='스캔된 불량품 바코드')
         self.scanned_defects_tree.column('no', width=50, anchor='center')
 
+        # 하단 버튼 (취소, 생성)
         bottom_button_frame = ttk.Frame(right_frame, style='TFrame')
         bottom_button_frame.grid(row=3, column=0, sticky='e', pady=(10, 0))
         self.cancel_defect_merge_button = ttk.Button(bottom_button_frame, text="취소", command=self.cancel_defective_merge_session, state=tk.DISABLED)
         self.cancel_defect_merge_button.pack(side=tk.LEFT, padx=5)
-        # 불량표 수동 생성 버튼 (2번째 생성 시기)
         self.generate_defect_label_button = ttk.Button(bottom_button_frame, text="불량표 생성", command=self.generate_defective_label, state=tk.DISABLED)
         self.generate_defect_label_button.pack(side=tk.LEFT, padx=5)
-
-        self.available_defects_tree.bind('<<TreeviewSelect>>', self.on_available_defect_select)
-        self.available_defects_tree.bind('<Double-1>', self.on_available_defect_double_click)
 
     def show_add_defect_popup(self):
         """불량품을 직접 입력받는 팝업 창을 표시합니다."""
@@ -1258,6 +1268,7 @@ class InspectionProgram:
         barcode_entry.bind('<Return>', lambda e: on_confirm())
 
     def on_available_defect_select(self, event=None):
+        # '불량 합치기 시작' 버튼은 항상 활성화 상태를 유지하므로 이 함수는 특별한 작업을 수행하지 않습니다.
         pass
 
     def _record_manual_defect(self, barcode: str):
@@ -1292,67 +1303,28 @@ class InspectionProgram:
         self.load_all_defective_items()
 
     def on_available_defect_double_click(self, event=None):
-        """불량품 목록 더블클릭 시 관련 동작 메뉴 표시"""
+        """'미처리 불량품' 목록의 항목을 더블클릭하면 해당 품목의 모든 미처리 불량품을 포함하는 합치기 세션을 시작합니다."""
         if not self.available_defects_tree.selection():
             return
 
         selection = self.available_defects_tree.selection()[0]
         item_values = self.available_defects_tree.item(selection, 'values')
-        if len(item_values) < 4:
+        if len(item_values) < 2:
             return
 
-        item_name, item_code, worker, count = item_values
+        item_code = item_values[1]
+        self._start_defect_merge_from_selection(item_code)
 
-        # 컨텍스트 메뉴 생성
-        context_menu = tk.Menu(self.root, tearoff=0)
 
-        # 불량 합치기 시작
-        if not self.current_defective_merge_session.item_code:
-            context_menu.add_command(
-                label=f"🔗 '{item_name}' 불량 합치기 시작",
-                command=lambda: self._start_defect_merge_from_menu(item_code)
-            )
-
-        # 불량품 세부 정보 보기
-        context_menu.add_command(
-            label=f"📋 '{item_name}' 불량품 세부 정보 보기",
-            command=lambda: self._show_defect_details(item_code, worker)
-        )
-
-        # 불량표 즉시 생성 (기존 불량품으로)
-        context_menu.add_command(
-            label=f"🏷️ '{item_name}' 불량표 즉시 생성",
-            command=lambda: self._generate_instant_defect_label(item_code, worker)
-        )
-
-        context_menu.add_separator()
-
-        # 불량품 삭제 (관리자 기능)
-        context_menu.add_command(
-            label=f"🗑️ '{item_name}' 불량품 목록에서 제거",
-            command=lambda: self._remove_defects_from_list(item_code, worker)
-        )
-
-        # 마우스 위치에 메뉴 표시
-        try:
-            context_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            context_menu.grab_release()
-
-    def _start_defect_merge_from_menu(self, item_code):
-        """메뉴에서 불량 합치기 시작"""
+    def _start_defect_merge_from_selection(self, item_code: str):
+        """선택된 품목 코드로 불량 합치기 세션을 시작합니다."""
         defect_data = self.available_defects.get(item_code)
-        if not defect_data or not defect_data.get('unprocessed_barcodes'):
+
+        # 미처리 불량품이 있는지 확인
+        unprocessed_barcodes = defect_data.get('unprocessed_barcodes', set())
+        if not unprocessed_barcodes:
             messagebox.showwarning("처리 불가", "해당 품목은 처리할 미처리 불량품이 없습니다.")
             return
-
-        # 해당 품목을 선택하고 세션 시작
-        for child in self.available_defects_tree.get_children():
-            item_values = self.available_defects_tree.item(child, 'values')
-            if len(item_values) > 1 and item_values[1] == item_code:
-                self.available_defects_tree.selection_set(child)
-                self.available_defects_tree.focus(child)
-                break
 
         # 선택된 품목으로 세션 생성
         self.current_defective_merge_session = DefectiveMergeSession(
@@ -1361,16 +1333,19 @@ class InspectionProgram:
             item_spec=defect_data.get('spec', ''),
             target_quantity=int(self.defect_target_qty_spinbox.get())
         )
-        # 이미 존재하는 미처리 불량품들을 세션에 바로 추가
-        self.current_defective_merge_session.scanned_defects.extend(list(defect_data.get('unprocessed_barcodes', [])))
 
+        # 해당 품목의 모든 미처리 불량품을 세션에 바로 추가
+        self.current_defective_merge_session.scanned_defects.extend(list(unprocessed_barcodes))
+
+        # UI 업데이트
         self.scan_entry_defective.config(state=tk.NORMAL)
         self.cancel_defect_merge_button.config(state=tk.NORMAL)
         self.generate_defect_label_button.config(state=tk.NORMAL)
         self.start_defect_merge_button.config(state=tk.DISABLED)
+
         self._schedule_focus_return()
         self._update_defective_mode_ui()
-        self.show_status_message(f"'{item_code}' 불량 합치기를 시작했습니다.", self.COLOR_SUCCESS)
+        self.show_status_message(f"'{defect_data.get('name', item_code)}' 불량 합치기를 시작했습니다.", self.COLOR_SUCCESS)
 
     def _show_defect_details(self, item_code, worker):
         """불량품 세부 정보 표시"""
@@ -1578,14 +1553,12 @@ class InspectionProgram:
         self._apply_mode_ui()
 
     def load_all_defective_items(self):
-        self.show_status_message("전체 작업자 불량 데이터를 불러오는 중...", self.COLOR_PRIMARY)
+        """모든 로그와 데이터를 종합하여 처리/미처리 불량품 목록을 생성합니다."""
+        self.show_status_message("전체 불량 데이터를 불러오는 중...", self.COLOR_PRIMARY)
         self.root.update_idletasks()
 
-        available_defects = {}
-        reworked_barcodes = set()
-        processed_defects = set() # 불량표에 포함된 바코드
-
-        # 1. 이미 생성된 모든 불량표에서 바코드 목록을 가져옵니다.
+        # 1. 모든 '처리된' 불량품 바코드 목록 생성 (defects_merged 폴더의 .json 파일 기준)
+        processed_barcodes = set()
         if os.path.exists(self.defects_data_folder):
             for root, _, files in os.walk(self.defects_data_folder):
                 for filename in files:
@@ -1593,103 +1566,106 @@ class InspectionProgram:
                         try:
                             with open(os.path.join(root, filename), 'r', encoding='utf-8') as f:
                                 data = json.load(f)
-                                processed_defects.update(data.get('barcodes', []))
+                                processed_barcodes.update(data.get('barcodes', []))
                         except (json.JSONDecodeError, IOError) as e:
                             print(f"불량 데이터 파일 '{filename}' 처리 중 오류: {e}")
 
-        # 2. 리워크된 바코드 목록을 가져옵니다.
-        log_folder = self.save_folder
+        # 2. 리워크되어 더 이상 불량이 아닌 바코드 목록 생성
+        reworked_barcodes = set()
         rework_log_pattern = re.compile(r"리워크작업이벤트로그_.*\.csv")
-        if os.path.exists(log_folder):
-            for filename in os.listdir(log_folder):
-                if rework_log_pattern.match(filename):
-                    try:
-                        with open(os.path.join(log_folder, filename), 'r', encoding='utf-8-sig') as f:
-                            reader = csv.DictReader(f)
-                            for row in reader:
-                                if row.get('event') == 'REWORK_SUCCESS':
-                                    details = json.loads(row.get('details', '{}'))
-                                    if 'barcode' in details:
-                                        reworked_barcodes.add(details['barcode'])
-                    except Exception as e:
-                        print(f"리워크 로그 파일 '{filename}' 처리 중 오류: {e}")
+        for filename in os.listdir(self.save_folder):
+            if rework_log_pattern.match(filename):
+                try:
+                    with open(os.path.join(self.save_folder, filename), 'r', encoding='utf-8-sig') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            if row.get('event') == 'REWORK_SUCCESS':
+                                details = json.loads(row.get('details', '{}'))
+                                if 'barcode' in details:
+                                    reworked_barcodes.add(details['barcode'])
+                except Exception as e:
+                    print(f"리워크 로그 파일 '{filename}' 처리 중 오류: {e}")
 
-        # 3. 검사 로그를 처리하여 불량품을 집계합니다.
+        # 3. 모든 검사 로그에서 'INSPECTION_DEFECTIVE' 이벤트를 찾아 처리/미처리로 분류
+        all_defects = {}
         inspection_log_pattern = re.compile(r"검사작업이벤트로그_.*\.csv")
-        if os.path.exists(log_folder):
-            for filename in os.listdir(log_folder):
-                if inspection_log_pattern.match(filename):
-                    try:
-                        with open(os.path.join(log_folder, filename), 'r', encoding='utf-8-sig') as f:
-                            reader = csv.DictReader(f)
-                            for row in reader:
-                                if row.get('event') == 'INSPECTION_DEFECTIVE':
-                                    details = json.loads(row.get('details', '{}'))
-                                    barcode = details.get('barcode')
-                                    if not barcode or barcode in reworked_barcodes:
-                                        continue
+        for filename in os.listdir(self.save_folder):
+            if inspection_log_pattern.match(filename):
+                try:
+                    with open(os.path.join(self.save_folder, filename), 'r', encoding='utf-8-sig') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            if row.get('event') == 'INSPECTION_DEFECTIVE':
+                                details = json.loads(row.get('details', '{}'))
+                                barcode = details.get('barcode')
 
-                                    item_code_from_barcode = None
-                                    for item in self.items_data:
-                                        item_code = item.get('Item Code')
-                                        if item_code and item_code in barcode:
-                                            item_code_from_barcode = item_code
-                                            break
+                                # 유효하지 않거나 리워크된 바코드는 건너뜀
+                                if not barcode or barcode in reworked_barcodes:
+                                    continue
 
-                                    if item_code_from_barcode:
-                                        worker_name = row.get('worker', '알수없음')
-                                        # 품목별로 데이터를 집계 (작업자 구분 없이)
-                                        defect_key = item_code_from_barcode
+                                item_code = details.get('item_code')
+                                if not item_code: continue
 
-                                        if defect_key not in available_defects:
-                                            matched_item = next((i for i in self.items_data if i['Item Code'] == item_code_from_barcode), None)
-                                            available_defects[defect_key] = {
-                                                'item_code': item_code_from_barcode,
-                                                'name': matched_item.get('Item Name', '알수없음') if matched_item else '알수없음',
-                                                'spec': matched_item.get('Spec', '') if matched_item else '',
-                                                'unprocessed_barcodes': set(),
-                                                'processed_barcodes': set()
-                                            }
+                                if item_code not in all_defects:
+                                    matched_item = next((i for i in self.items_data if i['Item Code'] == item_code), None)
+                                    all_defects[item_code] = {
+                                        'item_code': item_code,
+                                        'name': matched_item.get('Item Name', '알수없음') if matched_item else '알수없음',
+                                        'spec': matched_item.get('Spec', '') if matched_item else '',
+                                        'unprocessed_barcodes': set(),
+                                        'processed_barcodes': set()
+                                    }
 
-                                        # 처리 여부에 따라 분리하여 저장
-                                        if barcode in processed_defects:
-                                            available_defects[defect_key]['processed_barcodes'].add(barcode)
-                                        else:
-                                            available_defects[defect_key]['unprocessed_barcodes'].add(barcode)
-                    except Exception as e:
-                        print(f"검사 로그 파일 '{filename}' 처리 중 오류: {e}")
+                                # 처리/미처리 여부 판단
+                                if barcode in processed_barcodes:
+                                    all_defects[item_code]['processed_barcodes'].add(barcode)
+                                else:
+                                    all_defects[item_code]['unprocessed_barcodes'].add(barcode)
+                except Exception as e:
+                    print(f"검사 로그 파일 '{filename}' 처리 중 오류: {e}")
 
-        self.available_defects = available_defects
+        self.available_defects = all_defects
         self._update_defective_mode_ui()
         self.show_status_message("불량 데이터 로드 완료.", self.COLOR_SUCCESS)
 
     def _update_defective_mode_ui(self):
-        for i in self.available_defects_tree.get_children():
-            self.available_defects_tree.delete(i)
+        """'미처리'와 '처리완료' Treeview를 포함한 불량 처리 UI 전체를 업데이트합니다."""
+        # 기존 목록 초기화
+        for i in self.unprocessed_defects_tree.get_children():
+            self.unprocessed_defects_tree.delete(i)
+        for i in self.processed_defects_tree.get_children():
+            self.processed_defects_tree.delete(i)
 
         sorted_items = sorted(self.available_defects.items(), key=lambda item: item[1]['name'])
+
         for item_code, data in sorted_items:
             unprocessed_count = len(data.get('unprocessed_barcodes', set()))
             processed_count = len(data.get('processed_barcodes', set()))
 
-            tag = ()
-            if unprocessed_count == 0 and processed_count > 0:
-                tag = ('processed_item',)
-
-            if unprocessed_count > 0 or processed_count > 0:
-                 self.available_defects_tree.insert('', 'end', values=(
+            # 미처리 목록에 추가
+            if unprocessed_count > 0:
+                self.unprocessed_defects_tree.insert('', 'end', values=(
                     data['name'],
                     data['item_code'],
-                    unprocessed_count,
-                    processed_count
-                ), tags=tag)
+                    unprocessed_count
+                ))
 
+            # 처리완료 목록에 추가
+            if processed_count > 0:
+                self.processed_defects_tree.insert('', 'end', values=(
+                    data['name'],
+                    data['item_code'],
+                    processed_count
+                ), tags=('processed_item',))
+
+        # 세션 정보 업데이트
         session = self.current_defective_merge_session
         if session.item_code:
             self.defect_session_label.config(text=f"처리 중: {session.item_name} ({session.item_code}) - {len(session.scanned_defects)} / {session.target_quantity}")
         else:
-            self.defect_session_label.config(text="'불량 합치기'를 시작하거나 불량표를 바로 스캔하세요.")
+            self.defect_session_label.config(text="미처리 목록을 더블클릭하거나, 불량품/불량표를 스캔하세요.")
 
+        # 스캔된 불량품 목록 업데이트
         for i in self.scanned_defects_tree.get_children():
             self.scanned_defects_tree.delete(i)
 
@@ -1697,21 +1673,24 @@ class InspectionProgram:
             self.scanned_defects_tree.insert('', 'end', values=(i + 1, barcode))
 
     def start_defective_merge_session(self):
-        # 품목이 선택되지 않은 경우 빈 세션으로 시작 (불량표/불량품 바코드 스캔으로 자동 설정됨)
+        """'불량 합치기 시작' 버튼 클릭 시 호출됩니다. 품목 선택 여부와 관계없이 빈 세션을 생성합니다."""
         self.current_defective_merge_session = DefectiveMergeSession(
-            item_code="",  # 첫 번째 스캔으로 결정됨
-            item_name="",  # 첫 번째 스캔으로 결정됨
-            item_spec="",  # 첫 번째 스캔으로 결정됨
+            item_code="",
+            item_name="",
+            item_spec="",
             target_quantity=int(self.defect_target_qty_spinbox.get())
         )
 
+        # UI 상태 업데이트
         self.scan_entry_defective.config(state=tk.NORMAL)
         self.cancel_defect_merge_button.config(state=tk.NORMAL)
         self.generate_defect_label_button.config(state=tk.NORMAL)
         self.start_defect_merge_button.config(state=tk.DISABLED)
-        # self.available_defects_tree.config(selectmode=tk.NONE)
+
+        # 포커스를 스캔 입력창으로 이동
         self._schedule_focus_return()
         self._update_defective_mode_ui()
+        self.show_status_message("불량품 또는 불량표를 스캔하여 합치기를 시작하세요.", self.COLOR_PRIMARY)
 
     def cancel_defective_merge_session(self):
         if self.current_defective_merge_session.scanned_defects:
@@ -1724,29 +1703,24 @@ class InspectionProgram:
         self.cancel_defect_merge_button.config(state=tk.DISABLED)
         self.generate_defect_label_button.config(state=tk.DISABLED)
         self.start_defect_merge_button.config(state=tk.NORMAL)
-        # self.available_defects_tree.config(selectmode=tk.BROWSE)
         self._update_defective_mode_ui()
 
     def _process_defective_merge_scan(self, barcode: str):
+        """불량 처리 모드에서 스캔된 바코드를 처리합니다."""
         session = self.current_defective_merge_session
 
-        # 불량표 QR 코드 처리 (최우선)
-        defect_qr_data = None
+        # 최우선: 불량표 QR 코드 처리
         try:
             if barcode.strip().startswith('{') and barcode.strip().endswith('}'):
                 data = json.loads(barcode)
                 if 'id' in data and data['id'].startswith('DEFECT-'):
-                    defect_qr_data = data
+                    self._add_defective_label_to_current_session(data)
+                    return
         except json.JSONDecodeError:
             pass
 
-        if defect_qr_data:
-            self._add_defective_label_to_current_session(defect_qr_data)
-            return
-
-        # 세션이 시작되지 않은 경우, 바코드에서 품목 코드를 추출하여 자동 세션 시작
+        # 세션에 품목 코드가 없는 경우: 첫 스캔으로 품목 자동 설정
         if not session.item_code:
-            # 바코드에서 품목 코드 추출
             detected_item_code = None
             for item in self.items_data:
                 item_code = item.get('Item Code')
@@ -1755,55 +1729,55 @@ class InspectionProgram:
                     break
 
             if detected_item_code:
-                # 자동으로 세션 시작
-                session.item_code = detected_item_code
                 matched_item = next((item for item in self.items_data if item['Item Code'] == detected_item_code), None)
                 if matched_item:
+                    session.item_code = detected_item_code
                     session.item_name = matched_item.get('Item Name', '')
                     session.item_spec = matched_item.get('Spec', '')
-
-                session.target_quantity = 48  # 기본 목표 수량
-                self.show_status_message(f"품목 '{session.item_name}' 불량품 통합 세션 자동 시작", self.COLOR_DEFECT, 3000)
-                self._update_defective_mode_ui()
+                    self.show_status_message(f"품목 '{session.item_name}'의 불량 합치기를 시작합니다.", self.COLOR_SUCCESS)
+                    self._update_defective_mode_ui()
+                else:
+                    self.show_fullscreen_warning("오류", f"품목코드 '{detected_item_code}'의 정보를 찾을 수 없습니다.", self.COLOR_DEFECT)
+                    return
             else:
-                if True:
-                    self.show_fullscreen_warning("오류", "바코드에서 품목 코드를 인식할 수 없습니다.\n먼저 처리할 품목을 선택하거나 품목 코드가 포함된 바코드를 스캔해주세요.", self.COLOR_DEFECT)
+                self.show_fullscreen_warning("오류", "바코드에서 유효한 품목 코드를 찾을 수 없습니다.\n먼저 처리할 품목을 선택하거나 품목 코드가 포함된 바코드를 스캔하세요.", self.COLOR_DEFECT)
                 return
 
-        # 바코드에 현재 세션의 품목 코드가 포함되어 있는지 확인
+        # 품목 코드 일치 여부 확인
         if session.item_code not in barcode:
-            self.show_fullscreen_warning("품목 불일치", f"현재 처리 중인 품목({session.item_name} - {session.item_code})과 다른 바코드입니다.", self.COLOR_DEFECT)
+            self.show_fullscreen_warning("품목 불일치", f"현재 처리 중인 품목({session.item_name})과 다른 바코드입니다.", self.COLOR_DEFECT)
             return
 
-        # available_defects에서 먼저 확인하고, 없으면 직접 처리 (현품표 없이 스캔된 경우)
-        available_barcodes = set()
-        for defect_key, defect_data in self.available_defects.items():
-            if defect_data['item_code'] == session.item_code:
-                available_barcodes.update(defect_data['barcodes'])
-
-        # available_defects에 없는 바코드라면 불량품으로 직접 기록 (INSPECTION_DEFECTIVE 이벤트 생성)
-        if barcode not in available_barcodes:
-            self._log_event('INSPECTION_DEFECTIVE', detail={
-                'barcode': barcode,
-                'item_code': session.item_code,
-                'item_name': session.item_name,
-                'direct_scan': True,  # 현품표 없이 직접 스캔된 경우 표시
-                'scan_time': datetime.datetime.now().isoformat()
-            })
-            self.show_status_message("불량품으로 직접 기록되었습니다.", self.COLOR_DEFECT, 2000)
-
+        # 중복 스캔 확인
         if barcode in session.scanned_defects:
             self.show_fullscreen_warning("중복 스캔", "이미 이 상자에 추가된 불량품입니다.", self.COLOR_DEFECT)
             return
 
+        # 스캔된 바코드가 처리 가능한 불량품 목록에 있는지 확인
+        # (없어도 수동으로 추가된 것으로 간주하고 진행)
+        is_available = False
+        if session.item_code in self.available_defects:
+            if barcode in self.available_defects[session.item_code]['unprocessed_barcodes']:
+                is_available = True
+
+        if not is_available:
+             self._log_event('INSPECTION_DEFECTIVE', detail={
+                'barcode': barcode,
+                'item_code': session.item_code,
+                'item_name': session.item_name,
+                'direct_scan': True,
+                'scan_time': datetime.datetime.now().isoformat()
+            })
+             self.show_status_message("목록에 없던 불량품이 추가되었습니다.", self.COLOR_DEFECT, 2000)
+
+        # 세션에 바코드 추가 및 UI 업데이트
         if self.success_sound: self.success_sound.play()
         session.scanned_defects.append(barcode)
         self._update_defective_mode_ui()
 
-        # 불량표 자동 생성 조건: 목표 수량 달성 시
+        # 목표 수량 달성 시 불량표 자동 생성
         if len(session.scanned_defects) >= session.target_quantity:
             self.show_status_message(f"목표 수량({session.target_quantity}개)에 도달했습니다. 불량표를 생성합니다.", self.COLOR_SUCCESS)
-            # 자동으로 불량표 생성 (1번째 생성 시기)
             self.generate_defective_label()
 
     def generate_defective_label(self):
