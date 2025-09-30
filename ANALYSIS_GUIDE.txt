@@ -1,0 +1,404 @@
+================================================================================
+INSPECTION WORKER 데이터 분석 프로그램 개발 가이드라인
+================================================================================
+
+이 문서는 Inspection Worker 시스템의 로그 데이터를 분석하는 프로그램을 개발하기 위한
+상세한 가이드라인입니다.
+
+================================================================================
+1. 데이터 저장소 위치 및 구조
+================================================================================
+
+1.1 메인 로그 디렉토리
+└── C:\Sync\
+    ├── 검사작업이벤트로그_[작업자명]_[YYYYMMDD].csv     # 표준 검사 로그
+    ├── 리워크작업이벤트로그_[작업자명]_[YYYYMMDD].csv   # 리워크 로그
+    ├── 불량처리로그_[작업자명]_[YYYYMMDD].csv           # 불량 처리 로그
+    └── labels\                                        # 라벨 저장소
+        └── [YYYYMMDD]\                               # 일별 라벨 폴더
+            ├── 현품표_[WID]_[HHMMSSΜΜΜΜΜΜ].png         # 현품표 라벨
+            ├── 불량표_DEFECT-[YYYYMMDD-HHMMSSΜΜΜΜΜΜ].png # 불량표 라벨
+            └── 잔량표_SPARE-[YYYYMMDD-HHMMSSΜΜΜΜΜΜ].png  # 잔량표 라벨
+
+1.2 데이터 폴더 구조
+└── [프로그램폴더]\defects_merged\
+    └── [YYYY-MM-DD]\
+        └── DEFECT-[YYYYMMDD-HHMMSSΜΜΜΜΜΜ].json       # 불량표 데이터
+└── [프로그램폴더]\remnants\
+    └── [YYYY-MM-DD]\
+        └── SPARE-[YYYYMMDD-HHMMSSΜΜΜΜΜΜ].json        # 잔량표 데이터
+
+1.3 설정 및 상태 파일
+└── [프로그램폴더]\config\
+    └── inspection_settings.json                     # UI 설정
+└── [프로그램폴더]\
+    └── _current_inspection_state_[컴퓨터ID].json     # 현재 세션 상태
+
+================================================================================
+2. CSV 로그 파일 구조 분석
+================================================================================
+
+2.1 표준 검사 로그 (검사작업이벤트로그_*.csv)
+컬럼 구조:
+- timestamp: 이벤트 발생 시간 (YYYY-MM-DD HH:MM:SS.mmm)
+- event_type: 이벤트 타입 (아래 2.4 참조)
+- worker: 작업자명
+- item_code: 품목 코드 (13자리)
+- item_name: 품목명
+- master_label: 현품표 코드 (WID-형식)
+- barcode: 스캔된 바코드 (제품 바코드)
+- scan_count: 현재 스캔 횟수
+- total_quantity: 목표 수량
+- work_time_sec: 작업 소요 시간 (초)
+- details: 추가 정보 (JSON 형식 문자열)
+
+예시 데이터:
+2024-12-24 09:15:30.123,SESSION_START,김철수,8811012345678,샘플제품A,WID20241224091530,,0,60,0.0,"{""tray_size"": 60}"
+2024-12-24 09:16:45.456,INSPECTION_GOOD,김철수,8811012345678,샘플제품A,WID20241224091530,8811012345678001,1,60,75.2,"{""scan_time"": ""2024-12-24 09:16:45""}"
+2024-12-24 09:17:02.789,INSPECTION_DEFECTIVE,김철수,8811012345678,샘플제품A,WID20241224091530,8811012345678002,2,60,92.5,"{""scan_time"": ""2024-12-24 09:17:02""}"
+
+2.2 리워크 로그 (리워크작업이벤트로그_*.csv)
+컬럼 구조: 표준 검사 로그와 동일
+주요 이벤트 타입: REWORK_ITEM_PROCESSED, REWORK_SESSION_COMPLETE
+
+2.3 불량 처리 로그 (불량처리로그_*.csv)
+컬럼 구조: 표준 검사 로그와 동일
+주요 이벤트 타입: DEFECT_MERGE_STARTED, DEFECT_LABEL_GENERATED
+
+2.4 주요 이벤트 타입 및 의미
+
+▶ 세션 관리 이벤트:
+- SESSION_START: 검사 세션 시작 (현품표 스캔)
+- SESSION_COMPLETE: 세션 정상 완료
+- SESSION_RESET: 세션 리셋
+- TRAY_SUBMIT: 트레이 제출 (부분 또는 전체)
+- SESSION_RESTORED: 이전 세션 복구
+
+▶ 검사 관련 이벤트:
+- SCAN_SUCCESS: 바코드 스캔 성공
+- SCAN_DUPLICATE: 중복 바코드 스캔 시도
+- SCAN_MISMATCH: 품목 불일치
+- INSPECTION_GOOD: 양품 판정
+- INSPECTION_DEFECTIVE: 불량품 판정 (F12 페달)
+
+▶ 모드 전환 이벤트:
+- MODE_CHANGE: 모드 변경 (detail에 mode 정보)
+- MODE_SWITCH_REWORK: 리워크 모드 전환
+- MODE_SWITCH_REMNANT: 잔량 모드 전환
+- MODE_SWITCH_DEFECTIVE: 불량 처리 모드 전환
+- MODE_SWITCH_EXCHANGE: 개별 제품 교환 모드 전환
+
+▶ 라벨 생성 이벤트:
+- LABEL_MASTER_CREATED: 현품표 생성
+- LABEL_DEFECTIVE_CREATED: 불량표 생성
+- LABEL_REMNANT_CREATED: 잔량표 생성
+
+▶ 개별 제품 교환 이벤트:
+- PRODUCT_EXCHANGE_STARTED: 제품 교환 시작
+- PRODUCT_EXCHANGE_COMPLETED: 제품 교환 완료
+- PRODUCT_EXCHANGE_CANCELLED: 제품 교환 취소
+
+▶ 불량 처리 이벤트:
+- DEFECT_MERGE_STARTED: 불량품 통합 시작
+- DEFECT_MERGE_COMPLETED: 불량품 통합 완료
+- DEFECT_LABEL_GENERATED: 불량표 생성
+
+▶ 시스템 이벤트:
+- IDLE_MODE_ON/OFF: 유휴 모드 진입/해제
+- UPDATE_CHECK_FOUND: 업데이트 발견
+- EXCLUSION_STARTED/COMPLETED: 제외 품목 처리
+
+2.5 Details 필드 JSON 구조 예시
+
+SESSION_START:
+{
+  "tray_size": 60,
+  "item_spec": "A14",
+  "phs": "1",
+  "work_order_id": "MFG-WO-2025-00047"
+}
+
+INSPECTION_GOOD/DEFECTIVE:
+{
+  "scan_time": "2024-12-24 09:16:45",
+  "item_spec": "A14",
+  "scan_sequence": 1
+}
+
+SESSION_COMPLETE:
+{
+  "completion_type": "full|partial",
+  "good_count": 58,
+  "defective_count": 2,
+  "work_time_sec": 1847.5,
+  "has_error_or_reset": false,
+  "scanned_product_barcodes": ["8811012345678001", "8811012345678002", ...],
+  "defective_product_barcodes": ["8811012345678059", "8811012345678060"]
+}
+
+PRODUCT_EXCHANGE_COMPLETED:
+{
+  "target_quantity": 2,
+  "exchange_pairs": [
+    {"defective": "8811012345678059", "good": "8811012345678061"},
+    {"defective": "8811012345678060", "good": "8811012345678062"}
+  ],
+  "item_code": "8811012345678",
+  "item_name": "샘플제품A"
+}
+
+DEFECT_LABEL_GENERATED:
+{
+  "defect_box_id": "DEFECT-20241224-091530ABCDEF",
+  "item_code": "8811012345678",
+  "quantity": 48,
+  "barcodes": ["8811012345678001", "8811012345678002", ...],
+  "creation_date": "2024-12-24T09:15:30.123456"
+}
+
+================================================================================
+3. JSON 데이터 파일 구조
+================================================================================
+
+3.1 불량표 데이터 (DEFECT-*.json)
+{
+  "defect_box_id": "DEFECT-20241224-091530ABCDEF",
+  "creation_date": "2024-12-24T09:15:30.123456",
+  "worker": "김철수",
+  "item_code": "8811012345678",
+  "item_name": "샘플제품A",
+  "item_spec": "A14",
+  "quantity": 48,
+  "barcodes": [
+    "8811012345678001",
+    "8811012345678002",
+    ...
+  ]
+}
+
+3.2 잔량표 데이터 (SPARE-*.json)
+{
+  "remnant_id": "SPARE-20241224-091530ABCDEF",
+  "creation_date": "2024-12-24T09:15:30.123456",
+  "worker": "김철수",
+  "item_code": "8811012345678",
+  "item_name": "샘플제품A",
+  "item_spec": "A14",
+  "quantity": 15,
+  "barcodes": [
+    "8811012345678046",
+    "8811012345678047",
+    ...
+  ]
+}
+
+3.3 현재 세션 상태 (_current_inspection_state_*.json)
+{
+  "master_label_code": "WID20241224091530",
+  "item_code": "8811012345678",
+  "item_name": "샘플제품A",
+  "quantity": 60,
+  "good_items": [
+    {"barcode": "8811012345678001", "timestamp": "2024-12-24T09:16:45.456"},
+    ...
+  ],
+  "defective_items": [
+    {"barcode": "8811012345678059", "timestamp": "2024-12-24T09:17:02.789"},
+    ...
+  ],
+  "scanned_barcodes": ["8811012345678001", "8811012345678002", ...],
+  "start_time": "2024-12-24T09:15:30.123456",
+  "stopwatch_seconds": 1847.5,
+  "is_partial_submission": false,
+  "is_restored_session": false
+}
+
+================================================================================
+4. 분석 프로그램 개발 권장사항
+================================================================================
+
+4.1 필수 라이브러리
+- pandas: CSV 데이터 처리
+- json: JSON 파일 파싱
+- datetime: 시간 데이터 처리
+- matplotlib/seaborn: 시각화
+- numpy: 수치 계산
+
+4.2 데이터 로딩 예시 코드 (Python)
+
+import pandas as pd
+import json
+import glob
+from datetime import datetime
+
+def load_inspection_logs(date_range=None, worker=None):
+    """검사 로그 데이터 로딩"""
+    log_files = glob.glob("C:/Sync/검사작업이벤트로그_*.csv")
+
+    all_data = []
+    for file in log_files:
+        try:
+            df = pd.read_csv(file, encoding='utf-8-sig')
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+
+            # 필터링
+            if date_range:
+                df = df[(df['timestamp'] >= date_range[0]) &
+                       (df['timestamp'] <= date_range[1])]
+            if worker:
+                df = df[df['worker'] == worker]
+
+            all_data.append(df)
+        except Exception as e:
+            print(f"파일 로딩 오류 {file}: {e}")
+
+    return pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
+
+def parse_details_json(details_str):
+    """Details 필드 JSON 파싱"""
+    if pd.isna(details_str) or details_str == '':
+        return {}
+    try:
+        return json.loads(details_str)
+    except:
+        return {}
+
+def load_defect_data(date_str):
+    """불량표 데이터 로딩"""
+    defect_files = glob.glob(f"./defects_merged/{date_str}/*.json")
+    defect_data = []
+
+    for file in defect_files:
+        try:
+            with open(file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                defect_data.append(data)
+        except Exception as e:
+            print(f"불량표 파일 로딩 오류 {file}: {e}")
+
+    return defect_data
+
+4.3 주요 분석 메트릭
+
+▶ 생산성 지표:
+- 시간당 처리량 (trays/hour)
+- 평균 트레이 완료 시간 (work_time_sec)
+- 작업자별 효율성 비교
+- 품목별 처리 속도
+
+▶ 품질 지표:
+- 불량률 (defective_count / total_count)
+- 품목별 불량 패턴
+- 불량 발생 시간대 분석
+- 리워크 비율
+
+▶ 시스템 사용 패턴:
+- 모드별 사용 빈도
+- 세션 복구 빈도
+- 오류 발생 패턴 (SCAN_DUPLICATE, SCAN_MISMATCH)
+- 유휴 시간 분석
+
+4.4 분석 쿼리 예시
+
+# 일별 생산량 집계
+daily_production = df[df['event_type'] == 'SESSION_COMPLETE'].groupby([
+    df['timestamp'].dt.date, 'worker', 'item_code'
+]).agg({
+    'scan_count': 'sum',
+    'work_time_sec': 'mean'
+}).reset_index()
+
+# 불량률 계산
+quality_analysis = df[df['event_type'].isin(['INSPECTION_GOOD', 'INSPECTION_DEFECTIVE'])].groupby([
+    df['timestamp'].dt.date, 'item_code'
+]).agg({
+    'event_type': lambda x: (x == 'INSPECTION_DEFECTIVE').sum() / len(x) * 100
+}).rename(columns={'event_type': 'defect_rate'})
+
+# 작업 효율성 분석
+efficiency_metrics = df[df['event_type'] == 'SESSION_COMPLETE'].groupby('worker').agg({
+    'work_time_sec': ['mean', 'std', 'min', 'max'],
+    'scan_count': 'sum'
+})
+
+4.5 예외 상황 처리
+
+▶ 데이터 무결성 검사:
+- 누락된 SESSION_START/COMPLETE 쌍
+- 비정상적인 work_time_sec 값 (음수, 과도한 값)
+- 잘못된 timestamp 순서
+- 중복된 barcode 스캔
+
+▶ 파일 접근 오류:
+- 파일이 사용 중인 경우 (프로그램 실행 중)
+- 권한 부족
+- 파일 손상
+
+▶ 데이터 형식 오류:
+- JSON 파싱 실패
+- CSV 인코딩 문제 (UTF-8-BOM 권장)
+- 필수 컬럼 누락
+
+================================================================================
+5. 성능 최적화 가이드라인
+================================================================================
+
+5.1 대용량 데이터 처리
+- 청크 단위로 CSV 파일 읽기 (chunksize 매개변수 사용)
+- 필요한 컬럼만 선택적으로 로딩
+- 날짜 범위 사전 필터링
+
+5.2 메모리 관리
+- 사용하지 않는 DataFrame 명시적 삭제
+- 적절한 데이터 타입 사용 (category, datetime 등)
+- 대량 집계 시 groupby 최적화
+
+5.3 캐싱 전략
+- 일별/주별 집계 결과 캐싱
+- 중간 처리 결과 pickle/parquet 저장
+- 메모리 기반 캐싱 (functools.lru_cache)
+
+================================================================================
+6. 보안 및 데이터 보호
+================================================================================
+
+6.1 개인정보 보호
+- 작업자명 익명화 옵션 제공
+- 민감한 제품 정보 마스킹
+- 로그 접근 권한 제한
+
+6.2 데이터 백업
+- 분석 전 원본 데이터 백업
+- 처리 결과 버전 관리
+- 정기적인 아카이빙
+
+6.3 감사 추적
+- 분석 프로그램 실행 로그
+- 데이터 접근 기록
+- 결과 생성 이력
+
+================================================================================
+7. 확장성 고려사항
+================================================================================
+
+7.1 새로운 이벤트 타입 대응
+- 동적 이벤트 타입 파싱
+- 확장 가능한 details 필드 구조
+- 하위 호환성 유지
+
+7.2 다중 사이트 지원
+- 사이트별 데이터 소스 설정
+- 통합 대시보드 구성
+- 표준화된 메트릭 정의
+
+7.3 실시간 분석 준비
+- 스트리밍 데이터 처리 구조
+- 점진적 업데이트 로직
+- 알림 시스템 연동
+
+================================================================================
+이 가이드라인을 바탕으로 Inspection Worker 시스템의 데이터를 효과적으로
+분석하는 프로그램을 개발하시기 바랍니다.
+
+문의사항이나 추가 정보가 필요한 경우 개발팀에 연락 주세요.
+================================================================================

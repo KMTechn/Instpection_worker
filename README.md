@@ -165,6 +165,7 @@ _check_for_idle()           # 유휴 상태 체크
 - **리워크 모드**: 불량품 수리 후 재검사 처리
 - **잔량 모드**: 남은 제품에 대한 잔량표 라벨 생성
 - **불량품 통합 모드**: 48개 단위로 불량품 일괄 처리 및 불량표 생성
+- **개별 제품 교환 모드**: 현품표 완료 후 불량품 1개 이상을 양품으로 개별 교환
 
 ### 🔌 하드웨어 통합 기능
 - **바코드 스캐너**: USB 연결 자동 인식, 실시간 바코드 처리
@@ -234,55 +235,115 @@ config/
 ### 주요 이벤트 타입
 ```python
 # 검사 관련 이벤트
-SCAN_SUCCESS         # 바코드 스캔 성공
-SCAN_DUPLICATE       # 중복 바코드 스캔
-SCAN_MISMATCH       # 품목 불일치
-INSPECTION_GOOD     # 양품 판정
-INSPECTION_DEFECTIVE # 불량품 판정 (F12)
+SCAN_SUCCESS              # 바코드 스캔 성공
+SCAN_DUPLICATE           # 중복 바코드 스캔
+SCAN_MISMATCH           # 품목 불일치
+INSPECTION_GOOD         # 양품 판정
+INSPECTION_DEFECTIVE    # 불량품 판정 (F12)
 
 # 세션 관리 이벤트
-SESSION_START       # 검사 세션 시작
-SESSION_COMPLETE    # 세션 완료
-SESSION_RESET       # 세션 리셋
-TRAY_SUBMIT        # 트레이 제출
+SESSION_START           # 검사 세션 시작
+SESSION_COMPLETE        # 세션 완료
+SESSION_RESET           # 세션 리셋
+TRAY_SUBMIT            # 트레이 제출
+SESSION_RESTORED        # 세션 복구
 
 # 모드 전환 이벤트
+MODE_CHANGE            # 모드 변경 (standard/rework/remnant/defective/exchange)
 MODE_SWITCH_REWORK     # 리워크 모드 전환
 MODE_SWITCH_REMNANT    # 잔량 모드 전환
 MODE_SWITCH_DEFECTIVE  # 불량품 통합 모드 전환
+MODE_SWITCH_EXCHANGE   # 개별 제품 교환 모드 전환
 
 # 라벨 생성 이벤트
-LABEL_MASTER_CREATED    # 현품표 생성
-LABEL_DEFECTIVE_CREATED # 불량표 생성
-LABEL_REMNANT_CREATED   # 잔량표 생성
+LABEL_MASTER_CREATED     # 현품표 생성
+LABEL_DEFECTIVE_CREATED  # 불량표 생성
+LABEL_REMNANT_CREATED    # 잔량표 생성
+
+# 개별 제품 교환 이벤트
+PRODUCT_EXCHANGE_STARTED   # 제품 교환 시작
+PRODUCT_EXCHANGE_COMPLETED # 제품 교환 완료
+PRODUCT_EXCHANGE_CANCELLED # 제품 교환 취소
+
+# 불량 처리 이벤트
+DEFECT_MERGE_STARTED     # 불량품 통합 시작
+DEFECT_MERGE_COMPLETED   # 불량품 통합 완료
+DEFECT_MERGE_CANCELLED   # 불량품 통합 취소
+DEFECT_LABEL_GENERATED   # 불량표 생성
+
+# 리워크 관련 이벤트
+REWORK_ITEM_PROCESSED    # 리워크 아이템 처리
+REWORK_SESSION_COMPLETE  # 리워크 세션 완료
+
+# 잔량 처리 이벤트
+REMNANT_CREATION_STARTED # 잔량 생성 시작
+REMNANT_CREATION_COMPLETED # 잔량 생성 완료
+REMNANT_LABEL_GENERATED  # 잔량표 생성
+
+# 현품표 교체 이벤트
+MASTER_LABEL_REPLACE_START    # 현품표 교체 시작
+HISTORICAL_REPLACE_SUCCESS    # 완료된 현품표 교체 성공
+MASTER_LABEL_REPLACE_CANCEL   # 현품표 교체 취소
 
 # 시스템 이벤트
-UPDATE_CHECK_FOUND  # 업데이트 발견
-UPDATE_STARTED     # 업데이트 시작
-IDLE_MODE_ON       # 유휴 모드 진입
-IDLE_MODE_OFF      # 유휴 모드 해제
+UPDATE_CHECK_FOUND      # 업데이트 발견
+UPDATE_STARTED          # 업데이트 시작
+IDLE_MODE_ON           # 유휴 모드 진입
+IDLE_MODE_OFF          # 유휴 모드 해제
+EXCLUSION_STARTED      # 제외 품목 처리 시작
+EXCLUSION_COMPLETED    # 제외 품목 처리 완료
+
+# 테스트 관련 이벤트
+TEST_SESSION_START     # 테스트 세션 시작
+TEST_LOG_GENERATED     # 테스트 로그 생성
+AUTO_TEST_COMPLETED    # 자동 테스트 완료
+UNIT_TESTS_EXECUTED    # 단위 테스트 실행
 ```
 
 ### 데이터 모델 구조
 ```python
 @dataclass
 class InspectionSession:
-    master_label_code: str          # 현품표 바코드
-    item_code: str                  # 품목 코드
-    quantity: int = 60              # 목표 수량
-    good_items: List[Dict]          # 양품 목록
-    defective_items: List[Dict]     # 불량품 목록
-    scanned_barcodes: List[str]     # 스캔된 바코드 목록
-    start_time: datetime            # 시작 시간
-    is_test_tray: bool = False      # 테스트 여부
-    # ... 22개 필드
+    master_label_code: str              # 현품표 바코드
+    item_code: str                      # 품목 코드
+    item_name: str                      # 품목명
+    quantity: int = 60                  # 목표 수량
+    good_items: List[Dict]              # 양품 목록
+    defective_items: List[Dict]         # 불량품 목록
+    scanned_barcodes: List[str]         # 스캔된 바코드 목록
+    start_time: datetime                # 시작 시간
+    is_test_tray: bool = False          # 테스트 여부
+    is_partial_submission: bool = False # 부분 제출 여부
+    is_restored_session: bool = False   # 복구된 세션 여부
+    is_remnant_session: bool = False    # 잔량 세션 여부
+    consumed_remnant_ids: List[str]     # 소모된 잔량 ID 목록
+    # ... 34개 필드 총 구조
 
 @dataclass
 class DefectiveMergeSession:
-    item_code: str                  # 품목 코드
-    target_quantity: int = 48       # 목표 수량 (48개)
-    scanned_defects: List[str]      # 스캔된 불량품 목록
-    # ... 5개 필드
+    item_code: str                      # 품목 코드
+    item_name: str                      # 품목명
+    item_spec: str                      # 품목 규격
+    target_quantity: int = 48           # 목표 수량 (48개)
+    scanned_defects: List[str]          # 스캔된 불량품 목록
+
+@dataclass
+class RemnantCreationSession:
+    item_code: str                      # 품목 코드
+    item_name: str                      # 품목명
+    item_spec: str                      # 품목 규격
+    scanned_barcodes: List[str]         # 스캔된 바코드 목록
+
+@dataclass
+class ProductExchangeSession:
+    item_code: str                      # 품목 코드
+    item_name: str                      # 품목명
+    item_spec: str                      # 품목 규격
+    target_quantity: int = 1            # 교환할 수량
+    defective_barcodes: List[str]       # 불량품 바코드 목록
+    good_barcodes: List[str]            # 양품 바코드 목록
+    exchange_pairs: List[Dict]          # 교환 쌍 목록
+    current_step: str = "scan_defective" # 현재 단계
 ```
 
 ## 🧪 테스트 시스템

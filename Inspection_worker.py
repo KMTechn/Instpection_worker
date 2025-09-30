@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 
 # 분리된 모듈들 import
-from core.models import InspectionSession, RemnantCreationSession, DefectiveMergeSession
+from core.models import InspectionSession, RemnantCreationSession, DefectiveMergeSession, ProductExchangeSession
 from utils.file_handler import resource_path, find_file_in_subdirs, ensure_directory_exists, get_safe_filename
 from utils.logger import EventLogger
 from ui.base_ui import UIUtils, StyleManager
@@ -363,6 +363,9 @@ class InspectionProgram:
         self.current_defective_merge_session = DefectiveMergeSession()
         self.direct_defect_session = DefectiveMergeSession()
         self.available_defects: Dict[str, Dict[str, Any]] = {}
+
+        # 개별 제품 교환 모드 관련 변수들
+        self.current_exchange_session = ProductExchangeSession()
 
         self.items_data = self.load_items()
         
@@ -958,6 +961,8 @@ class InspectionProgram:
 
         self.defective_mode_button = ttk.Button(mode_frame, text="불량 처리 모드", command=self.toggle_defective_mode, style='Secondary.TButton')
         self.defective_mode_button.pack(side=tk.RIGHT, padx=(5,0))
+        self.exchange_mode_button = ttk.Button(mode_frame, text="개별 제품 교환", command=self.toggle_exchange_mode, style='Secondary.TButton')
+        self.exchange_mode_button.pack(side=tk.RIGHT, padx=(5,0))
         self.remnant_mode_button = ttk.Button(mode_frame, text="잔량 모드", command=self.toggle_remnant_mode, style='Secondary.TButton')
         self.remnant_mode_button.pack(side=tk.RIGHT, padx=(5,0))
         self.rework_mode_button = ttk.Button(mode_frame, text="리워크 모드", command=self.toggle_rework_mode, style='Secondary.TButton')
@@ -976,6 +981,7 @@ class InspectionProgram:
         self._create_rework_view(view_container)
         self._create_remnant_view(view_container)
         self._create_defective_view(view_container)
+        self._create_exchange_view(view_container)
 
         self.scan_entry = self.scan_entry_inspection
         
@@ -1227,6 +1233,102 @@ class InspectionProgram:
         self.generate_defect_label_button = ttk.Button(bottom_button_frame, text="불량표 생성", command=self.generate_defective_label, state=tk.DISABLED)
         self.generate_defect_label_button.pack(side=tk.LEFT, padx=5)
 
+    def _create_exchange_view(self, container):
+        """개별 제품 교환 모드의 UI를 생성합니다."""
+        self.exchange_view_frame = ttk.Frame(container, style='TFrame')
+        self.exchange_view_frame.grid(row=0, column=0, sticky='nsew')
+        self.exchange_view_frame.grid_columnconfigure(0, weight=1)
+        self.exchange_view_frame.grid_rowconfigure(2, weight=1)
+
+        # 상단: 교환 정보 프레임
+        exchange_info_frame = ttk.Frame(self.exchange_view_frame, style='TFrame')
+        exchange_info_frame.grid(row=0, column=0, sticky='ew', pady=10, padx=20)
+        exchange_info_frame.grid_columnconfigure(1, weight=1)
+
+        # 수량 선택
+        ttk.Label(exchange_info_frame, text="교환할 수량:", style='TLabel', font=(self.DEFAULT_FONT, int(12 * self.scale_factor), 'bold')).grid(row=0, column=0, sticky='w', padx=(0, 10))
+
+        quantity_frame = ttk.Frame(exchange_info_frame)
+        quantity_frame.grid(row=0, column=1, sticky='w')
+
+        self.exchange_quantity_var = tk.IntVar(value=1)
+        self.exchange_quantity_spin = ttk.Spinbox(quantity_frame, from_=1, to=10, textvariable=self.exchange_quantity_var, width=5,
+                                                 command=self._on_exchange_quantity_change, font=(self.DEFAULT_FONT, int(12 * self.scale_factor)))
+        self.exchange_quantity_spin.pack(side=tk.LEFT, padx=(0, 10))
+
+        ttk.Label(quantity_frame, text="개", style='TLabel', font=(self.DEFAULT_FONT, int(12 * self.scale_factor))).pack(side=tk.LEFT)
+
+        # 상태 라벨
+        self.exchange_status_label = ttk.Label(self.exchange_view_frame, text="교환할 수량을 선택한 후 불량품을 스캔하세요.",
+                                             style='TLabel', foreground=self.COLOR_PRIMARY,
+                                             font=(self.DEFAULT_FONT, int(14 * self.scale_factor), 'bold'))
+        self.exchange_status_label.grid(row=1, column=0, pady=10)
+
+        # 중단: 교환 목록 프레임
+        exchange_list_frame = ttk.Frame(self.exchange_view_frame)
+        exchange_list_frame.grid(row=2, column=0, sticky='nsew', padx=20, pady=5)
+        exchange_list_frame.grid_columnconfigure(0, weight=1)
+        exchange_list_frame.grid_columnconfigure(1, weight=1)
+        exchange_list_frame.grid_rowconfigure(0, weight=1)
+
+        # 왼쪽: 불량품 목록
+        defective_frame = ttk.LabelFrame(exchange_list_frame, text="스캔된 불량품", padding=5)
+        defective_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 5))
+        defective_frame.grid_columnconfigure(0, weight=1)
+        defective_frame.grid_rowconfigure(0, weight=1)
+
+        defective_cols = ('no', 'barcode')
+        self.exchange_defective_tree = ttk.Treeview(defective_frame, columns=defective_cols, show='headings')
+        self.exchange_defective_tree.heading('no', text='순번')
+        self.exchange_defective_tree.heading('barcode', text='불량품 바코드')
+        self.exchange_defective_tree.column('no', width=50, anchor='center', stretch=tk.NO)
+        self.exchange_defective_tree.column('barcode', anchor='w', stretch=tk.YES)
+        self.exchange_defective_tree.grid(row=0, column=0, sticky='nsew')
+
+        defective_scroll = ttk.Scrollbar(defective_frame, orient='vertical', command=self.exchange_defective_tree.yview)
+        defective_scroll.grid(row=0, column=1, sticky='ns')
+        self.exchange_defective_tree['yscrollcommand'] = defective_scroll.set
+
+        # 오른쪽: 양품 목록
+        good_frame = ttk.LabelFrame(exchange_list_frame, text="스캔된 양품", padding=5)
+        good_frame.grid(row=0, column=1, sticky='nsew', padx=(5, 0))
+        good_frame.grid_columnconfigure(0, weight=1)
+        good_frame.grid_rowconfigure(0, weight=1)
+
+        good_cols = ('no', 'barcode')
+        self.exchange_good_tree = ttk.Treeview(good_frame, columns=good_cols, show='headings')
+        self.exchange_good_tree.heading('no', text='순번')
+        self.exchange_good_tree.heading('barcode', text='양품 바코드')
+        self.exchange_good_tree.column('no', width=50, anchor='center', stretch=tk.NO)
+        self.exchange_good_tree.column('barcode', anchor='w', stretch=tk.YES)
+        self.exchange_good_tree.grid(row=0, column=0, sticky='nsew')
+
+        good_scroll = ttk.Scrollbar(good_frame, orient='vertical', command=self.exchange_good_tree.yview)
+        good_scroll.grid(row=0, column=1, sticky='ns')
+        self.exchange_good_tree['yscrollcommand'] = good_scroll.set
+
+        # 하단: 버튼 프레임
+        exchange_button_frame = ttk.Frame(self.exchange_view_frame, style='TFrame')
+        exchange_button_frame.grid(row=3, column=0, sticky='ew', pady=10, padx=20)
+
+        button_container = ttk.Frame(exchange_button_frame)
+        button_container.pack(expand=True)
+
+        self.exchange_start_button = ttk.Button(button_container, text="교환 시작", command=self._start_product_exchange, style='Primary.TButton')
+        self.exchange_start_button.pack(side=tk.LEFT, padx=5)
+
+        self.exchange_complete_button = ttk.Button(button_container, text="교환 완료", command=self._complete_product_exchange, state=tk.DISABLED)
+        self.exchange_complete_button.pack(side=tk.LEFT, padx=5)
+
+        self.exchange_cancel_button = ttk.Button(button_container, text="취소", command=self._cancel_product_exchange, state=tk.DISABLED)
+        self.exchange_cancel_button.pack(side=tk.LEFT, padx=5)
+
+        # 스캔 엔트리 추가
+        self.scan_entry_exchange = ScannerInputComponent(self.exchange_view_frame, on_scan=self.process_scan,
+                                                        on_focus=self._on_scan_entry_focus,
+                                                        font=(self.DEFAULT_FONT, int(16 * self.scale_factor)))
+        self.scan_entry_exchange.grid(row=4, column=0, pady=10)
+
     def on_available_defect_double_click(self, event=None):
         """'미처리 불량품' 목록의 항목을 더블클릭하면 해당 품목의 모든 미처리 불량품을 포함하는 합치기 세션을 시작합니다."""
         if not self.unprocessed_defects_tree.selection():
@@ -1473,6 +1575,21 @@ class InspectionProgram:
                 return
             self.current_mode = "defective"
             self.load_all_defective_items()
+
+        self._log_event('MODE_CHANGE', detail={'mode': self.current_mode})
+        self._apply_mode_ui()
+
+    def toggle_exchange_mode(self):
+        """개별 제품 교환 모드 전환"""
+        if self.current_mode == "exchange":
+            self.current_mode = "standard"
+            self._cancel_product_exchange()
+        else:
+            if self.current_session.master_label_code:
+                messagebox.showwarning("작업 중", "진행 중인 검사 작업이 있습니다.\n개별 제품 교환 모드로 전환할 수 없습니다.")
+                return
+            self.current_mode = "exchange"
+            self._reset_exchange_session()
 
         self._log_event('MODE_CHANGE', detail={'mode': self.current_mode})
         self._apply_mode_ui()
@@ -1866,11 +1983,14 @@ class InspectionProgram:
         is_rework = self.current_mode == 'rework'
         is_remnant = self.current_mode == 'remnant'
         is_defective = self.current_mode == 'defective'
+        is_exchange = self.current_mode == 'exchange'
 
         self.rework_mode_button.config(text="검사 모드로" if is_rework else "리워크 모드")
         self.remnant_mode_button.config(text="검사 모드로" if is_remnant else "잔량 모드")
         if hasattr(self, 'defective_mode_button'):
             self.defective_mode_button.config(text="검사 모드로" if is_defective else "불량 처리 모드")
+        if hasattr(self, 'exchange_mode_button'):
+            self.exchange_mode_button.config(text="검사 모드로" if is_exchange else "개별 제품 교환")
 
         # 모든 모드 버튼의 표시/숨김을 완전히 제어
         # 먼저 모든 버튼 숨기기
@@ -1880,6 +2000,8 @@ class InspectionProgram:
             self.remnant_mode_button.pack_forget()
         if hasattr(self, 'defective_mode_button'):
             self.defective_mode_button.pack_forget()
+        if hasattr(self, 'exchange_mode_button'):
+            self.exchange_mode_button.pack_forget()
 
         # 현재 모드에 따라 필요한 버튼들만 다시 표시
         if is_defective:
@@ -1890,6 +2012,8 @@ class InspectionProgram:
             # 다른 모드들: 모든 모드 버튼 표시
             if hasattr(self, 'defective_mode_button'):
                 self.defective_mode_button.pack(side=tk.RIGHT, padx=(5,0))
+            if hasattr(self, 'exchange_mode_button'):
+                self.exchange_mode_button.pack(side=tk.RIGHT, padx=(5,0))
             if hasattr(self, 'remnant_mode_button'):
                 self.remnant_mode_button.pack(side=tk.RIGHT, padx=(5,0))
             if hasattr(self, 'rework_mode_button'):
@@ -1905,6 +2029,9 @@ class InspectionProgram:
             self.defective_view_frame.tkraise()
             self.defective_view_frame.tkraise()
             self.scan_entry = self.scan_entry_defective
+        elif is_exchange:
+            self.exchange_view_frame.tkraise()
+            self.scan_entry = self.scan_entry_exchange
         else:
             self.inspection_view_frame.tkraise()
             self.scan_entry = self.scan_entry_inspection
@@ -1958,6 +2085,13 @@ class InspectionProgram:
         elif self.current_mode == "remnant":
             text = f"📦 잔량 등록 모드: 등록할 제품의 바코드를 스캔하여 목록을 만드세요."
             color = self.COLOR_SPARE
+        elif self.current_mode == "exchange":
+            session = self.current_exchange_session
+            if session.item_name:
+                text = f"🔄 개별 제품 교환: '{session.item_name}' (목표: {session.target_quantity}개)"
+            else:
+                text = f"🔄 개별 제품 교환: 교환할 제품을 선택하세요."
+            color = self.COLOR_PRIMARY
         elif self.current_session.is_remnant_session:
             text = f"📦 잔량 검사: '{self.current_session.item_name}'의 잔량을 검사합니다.\n총 {self.current_session.quantity}개 목표"
             color = self.COLOR_SPARE
@@ -2073,6 +2207,8 @@ class InspectionProgram:
             self._process_remnant_scan(barcode)
         elif self.current_mode == 'defective':
             self._process_defective_merge_scan(barcode)
+        elif self.current_mode == 'exchange':
+            self._process_exchange_scan(barcode)
         else:
             self._process_inspection_scan(barcode)
 
@@ -4124,6 +4260,194 @@ class InspectionProgram:
         defect_text.config(state=tk.NORMAL)
         defect_text.insert(tk.END, "\n".join(defect_items))
         defect_text.config(state=tk.DISABLED)
+
+    # ==================== 개별 제품 교환 관련 함수들 ====================
+
+    def _reset_exchange_session(self):
+        """교환 세션을 초기화합니다."""
+        self.current_exchange_session = ProductExchangeSession()
+        self._update_exchange_display()
+        self.exchange_status_label.config(text="교환할 수량을 선택한 후 불량품을 스캔하세요.")
+
+    def _on_exchange_quantity_change(self):
+        """교환 수량 변경 시 호출됩니다."""
+        try:
+            quantity = self.exchange_quantity_var.get()
+            self.current_exchange_session.target_quantity = quantity
+            self._update_exchange_status()
+        except tk.TclError:
+            pass
+
+    def _start_product_exchange(self):
+        """제품 교환을 시작합니다."""
+        if not self.current_exchange_session.target_quantity:
+            messagebox.showwarning("설정 오류", "교환할 수량을 먼저 설정해주세요.")
+            return
+
+        self.current_exchange_session.current_step = "scan_defective"
+        self.exchange_start_button.config(state=tk.DISABLED)
+        self.exchange_cancel_button.config(state=tk.NORMAL)
+        self.exchange_quantity_spin.config(state=tk.DISABLED)
+
+        self._update_exchange_status()
+        self.scan_entry_exchange.focus()
+
+    def _cancel_product_exchange(self):
+        """제품 교환을 취소합니다."""
+        if self.current_exchange_session.defective_barcodes or self.current_exchange_session.good_barcodes:
+            if not messagebox.askyesno("취소 확인", "진행중인 제품 교환을 취소하시겠습니까?"):
+                return
+
+        self._reset_exchange_session()
+        self.exchange_start_button.config(state=tk.NORMAL)
+        self.exchange_complete_button.config(state=tk.DISABLED)
+        self.exchange_cancel_button.config(state=tk.DISABLED)
+        self.exchange_quantity_spin.config(state=tk.NORMAL)
+
+    def _complete_product_exchange(self):
+        """제품 교환을 완료합니다."""
+        session = self.current_exchange_session
+
+        if len(session.defective_barcodes) != len(session.good_barcodes):
+            messagebox.showwarning("교환 오류", "불량품과 양품의 수량이 일치하지 않습니다.")
+            return
+
+        # 교환 기록 생성
+        for i in range(len(session.defective_barcodes)):
+            exchange_pair = {
+                "defective": session.defective_barcodes[i],
+                "good": session.good_barcodes[i]
+            }
+            session.exchange_pairs.append(exchange_pair)
+
+        # 로그 기록
+        self._log_event('PRODUCT_EXCHANGE_COMPLETED', detail={
+            'target_quantity': session.target_quantity,
+            'exchange_pairs': session.exchange_pairs,
+            'item_code': session.item_code,
+            'item_name': session.item_name
+        })
+
+        messagebox.showinfo("교환 완료",
+                          f"{len(session.exchange_pairs)}개의 제품 교환이 완료되었습니다.\n\n"
+                          f"품목: {session.item_name}\n"
+                          f"불량품 → 양품 교환")
+
+        # 세션 초기화
+        self._reset_exchange_session()
+        self.exchange_start_button.config(state=tk.NORMAL)
+        self.exchange_complete_button.config(state=tk.DISABLED)
+        self.exchange_cancel_button.config(state=tk.DISABLED)
+        self.exchange_quantity_spin.config(state=tk.NORMAL)
+
+    def _process_exchange_scan(self, barcode: str):
+        """교환 모드에서 스캔된 바코드를 처리합니다."""
+        session = self.current_exchange_session
+
+        # 바코드 검증
+        if len(barcode) < self.ITEM_CODE_LENGTH:
+            self.show_fullscreen_warning("바코드 형식 오류",
+                                        f"제품 바코드는 {self.ITEM_CODE_LENGTH}자리보다 길어야 합니다.",
+                                        self.COLOR_DANGER)
+            return
+
+        # 품목 코드 추출
+        item_code = barcode[:self.ITEM_CODE_LENGTH]
+
+        # 첫 스캔인 경우 품목 정보 설정
+        if not session.item_code:
+            matched_item = next((item for item in self.items_data if item.get('Item Code') == item_code), None)
+            if not matched_item:
+                self.show_fullscreen_warning("품목 없음",
+                                            f"품목 코드 '{item_code}' 정보를 찾을 수 없습니다.",
+                                            self.COLOR_DANGER)
+                return
+
+            session.item_code = item_code
+            session.item_name = matched_item.get('Item Name', item_code)
+            session.item_spec = matched_item.get('Item Spec', '')
+
+        # 품목 코드 일치 검사
+        if item_code != session.item_code:
+            self.show_fullscreen_warning("품목 코드 불일치",
+                                        f"다른 품목의 제품입니다.\n[기준: {session.item_code}]",
+                                        self.COLOR_DANGER)
+            return
+
+        # 중복 바코드 검사
+        all_barcodes = session.defective_barcodes + session.good_barcodes
+        if barcode in all_barcodes:
+            self.show_fullscreen_warning("바코드 중복",
+                                        f"이미 스캔된 바코드입니다.",
+                                        self.COLOR_DANGER)
+            return
+
+        # 단계별 처리
+        if session.current_step == "scan_defective":
+            session.defective_barcodes.append(barcode)
+            self.play_success_sound()
+
+            # 불량품 스캔 완료 시 양품 스캔으로 전환
+            if len(session.defective_barcodes) >= session.target_quantity:
+                session.current_step = "scan_good"
+
+        elif session.current_step == "scan_good":
+            session.good_barcodes.append(barcode)
+            self.play_success_sound()
+
+        # UI 업데이트
+        self._update_exchange_display()
+        self._update_exchange_status()
+
+        # 모든 교환 완료 시 버튼 활성화
+        if (len(session.defective_barcodes) >= session.target_quantity and
+            len(session.good_barcodes) >= session.target_quantity):
+            self.exchange_complete_button.config(state=tk.NORMAL)
+
+    def _update_exchange_display(self):
+        """교환 UI 디스플레이를 업데이트합니다."""
+        session = self.current_exchange_session
+
+        # 불량품 목록 업데이트
+        for item in self.exchange_defective_tree.get_children():
+            self.exchange_defective_tree.delete(item)
+
+        for i, barcode in enumerate(session.defective_barcodes):
+            self.exchange_defective_tree.insert('', 'end', values=(i+1, barcode))
+
+        # 양품 목록 업데이트
+        for item in self.exchange_good_tree.get_children():
+            self.exchange_good_tree.delete(item)
+
+        for i, barcode in enumerate(session.good_barcodes):
+            self.exchange_good_tree.insert('', 'end', values=(i+1, barcode))
+
+    def _update_exchange_status(self):
+        """교환 상태 메시지를 업데이트합니다."""
+        session = self.current_exchange_session
+
+        if session.current_step == "scan_defective":
+            remaining = session.target_quantity - len(session.defective_barcodes)
+            if remaining > 0:
+                status = f"불량품을 스캔하세요. (남은 수량: {remaining}개)"
+                color = self.COLOR_DEFECT
+            else:
+                status = "불량품 스캔 완료. 이제 양품을 스캔하세요."
+                color = self.COLOR_SUCCESS
+
+        elif session.current_step == "scan_good":
+            remaining = session.target_quantity - len(session.good_barcodes)
+            if remaining > 0:
+                status = f"양품을 스캔하세요. (남은 수량: {remaining}개)"
+                color = self.COLOR_SUCCESS
+            else:
+                status = "모든 스캔이 완료되었습니다. '교환 완료' 버튼을 클릭하세요."
+                color = self.COLOR_PRIMARY
+        else:
+            status = "교환할 수량을 선택한 후 '교환 시작' 버튼을 클릭하세요."
+            color = self.COLOR_TEXT_SUBTLE
+
+        self.exchange_status_label.config(text=status, foreground=color)
 
 
 if __name__ == "__main__":

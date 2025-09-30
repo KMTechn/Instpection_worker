@@ -50,3 +50,16 @@ class DefectiveMergeSession:
     item_spec: str = ""
     target_quantity: int = 48
     scanned_defects: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ProductExchangeSession:
+    """개별 제품 교환을 위한 세션 데이터입니다."""
+    item_code: str = ""
+    item_name: str = ""
+    item_spec: str = ""
+    target_quantity: int = 1
+    defective_barcodes: List[str] = field(default_factory=list)
+    good_barcodes: List[str] = field(default_factory=list)
+    exchange_pairs: List[Dict[str, str]] = field(default_factory=list)  # [{"defective": "barcode", "good": "barcode"}]
+    current_step: str = "scan_defective"  # "scan_defective" 또는 "scan_good"
