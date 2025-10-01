@@ -1314,9 +1314,6 @@ class InspectionProgram:
         button_container = ttk.Frame(exchange_button_frame)
         button_container.pack(expand=True)
 
-        self.exchange_start_button = ttk.Button(button_container, text="교환 시작", command=self._start_product_exchange, style='Primary.TButton')
-        self.exchange_start_button.pack(side=tk.LEFT, padx=5)
-
         self.exchange_complete_button = ttk.Button(button_container, text="교환 완료", command=self._complete_product_exchange, state=tk.DISABLED)
         self.exchange_complete_button.pack(side=tk.LEFT, padx=5)
 
@@ -1324,10 +1321,9 @@ class InspectionProgram:
         self.exchange_cancel_button.pack(side=tk.LEFT, padx=5)
 
         # 스캔 엔트리 추가
-        self.scan_entry_exchange = ScannerInputComponent(self.exchange_view_frame, on_scan=self.process_scan,
-                                                        on_focus=self._on_scan_entry_focus,
-                                                        font=(self.DEFAULT_FONT, int(16 * self.scale_factor)))
-        self.scan_entry_exchange.grid(row=4, column=0, pady=10)
+        self.scan_entry_exchange = tk.Entry(self.exchange_view_frame, justify='center', font=(self.DEFAULT_FONT, int(16 * self.scale_factor), 'bold'), bd=2, relief=tk.SOLID, highlightbackground=self.COLOR_BORDER, highlightcolor=self.COLOR_PRIMARY, highlightthickness=3)
+        self.scan_entry_exchange.grid(row=4, column=0, sticky='ew', ipady=int(8 * self.scale_factor), pady=10, padx=20)
+        self.scan_entry_exchange.bind('<Return>', self.process_scan)
 
     def on_available_defect_double_click(self, event=None):
         """'미처리 불량품' 목록의 항목을 더블클릭하면 해당 품목의 모든 미처리 불량품을 포함하는 합치기 세션을 시작합니다."""
@@ -4279,18 +4275,16 @@ class InspectionProgram:
             pass
 
     def _start_product_exchange(self):
-        """제품 교환을 시작합니다."""
+        """제품 교환을 시작합니다. (첫 스캔 시 자동 호출)"""
         if not self.current_exchange_session.target_quantity:
-            messagebox.showwarning("설정 오류", "교환할 수량을 먼저 설정해주세요.")
-            return
+            return False
 
         self.current_exchange_session.current_step = "scan_defective"
-        self.exchange_start_button.config(state=tk.DISABLED)
         self.exchange_cancel_button.config(state=tk.NORMAL)
         self.exchange_quantity_spin.config(state=tk.DISABLED)
 
         self._update_exchange_status()
-        self.scan_entry_exchange.focus()
+        return True
 
     def _cancel_product_exchange(self):
         """제품 교환을 취소합니다."""
@@ -4299,7 +4293,6 @@ class InspectionProgram:
                 return
 
         self._reset_exchange_session()
-        self.exchange_start_button.config(state=tk.NORMAL)
         self.exchange_complete_button.config(state=tk.DISABLED)
         self.exchange_cancel_button.config(state=tk.DISABLED)
         self.exchange_quantity_spin.config(state=tk.NORMAL)
@@ -4335,7 +4328,6 @@ class InspectionProgram:
 
         # 세션 초기화
         self._reset_exchange_session()
-        self.exchange_start_button.config(state=tk.NORMAL)
         self.exchange_complete_button.config(state=tk.DISABLED)
         self.exchange_cancel_button.config(state=tk.DISABLED)
         self.exchange_quantity_spin.config(state=tk.NORMAL)
@@ -4343,6 +4335,14 @@ class InspectionProgram:
     def _process_exchange_scan(self, barcode: str):
         """교환 모드에서 스캔된 바코드를 처리합니다."""
         session = self.current_exchange_session
+
+        # 세션이 시작되지 않았으면 자동으로 시작
+        if session.current_step == "not_started":
+            if not self._start_product_exchange():
+                self.show_fullscreen_warning("수량 미설정",
+                                            "교환할 수량을 먼저 설정해주세요.",
+                                            self.COLOR_DANGER)
+                return
 
         # 바코드 검증
         if len(barcode) < self.ITEM_CODE_LENGTH:
