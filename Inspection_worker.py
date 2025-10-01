@@ -71,7 +71,7 @@ class ConfigManager:
         default_config = {
             "app": {
                 "name": "Inspection Worker",
-                "version": "v2.0.8",
+                "version": "v2.0.10",
                 "description": "품질 검사 시스템"
             },
             "github": {
