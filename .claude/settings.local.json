@@ -13,7 +13,13 @@
       "Bash(find:*)",
       "Bash(timeout 30 python:*)",
       "Bash(del validate_test_codes.py)",
-      "Read(//c/company/program/Container_Audit/**)"
+      "Read(//c/company/program/Container_Audit/**)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nrefactor: Remove exchange start button and improve UX\n\n- 교환 시작 버튼 제거\n- 수량 선택 후 바로 스캔으로 교환 프로세스 시작\n- 첫 스캔 시 자동으로 교환 세션 시작\n- 상태 메시지 업데이트\n- 버전 업데이트: v2.0.7 → v2.0.8\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git tag:*)",
+      "Bash(git push:*)",
+      "Bash(gh release create:*)",
+      "Bash(git remote get-url:*)"
     ],
     "deny": [],
     "ask": []
