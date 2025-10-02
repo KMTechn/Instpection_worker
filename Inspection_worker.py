@@ -1911,11 +1911,11 @@ class InspectionProgram:
         config = {
             'size': (800, 400), 'bg_color': "#FADBD8", 'text_color': "#C0392B", 'padding': 30,
             'font_path': "C:/Windows/Fonts/malgunbd.ttf",
-            'font_sizes': {'title': 60, 'header': 20, 'body': 22, 'quantity': 40, 'unit': 20, 'footer': 16,},
+            'font_sizes': {'title': 60, 'header': 32, 'body': 34, 'quantity': 70, 'unit': 32, 'footer': 16,},
             'qr_code': {'size': 220, 'box_size': 10, 'border': 4,},
             'layout': {
                 'title_top_margin': 25, 'header_line_margin': 15, 'content_top_margin': 30,
-                'table_line_height': 45, 'table_header_x': 50, 'table_value_x': 170,
+                'table_line_height': 48, 'table_header_x': 50, 'table_value_x': 180,
                 'footer_bottom_margin': 40, 'footer_line_margin': 15,
             }
         }
@@ -1942,7 +1942,7 @@ class InspectionProgram:
         title_w, title_h = title_bbox[2] - title_bbox[0], title_bbox[3] - title_bbox[1]
         draw.text(((W - title_w) / 2, config['layout']['title_top_margin']), title_text, font=fonts['title'], fill=config['text_color'])
         line_y = config['layout']['title_top_margin'] + title_h + config['layout']['header_line_margin']
-        draw.line([(config['padding'], line_y), (W - config['padding'], line_y)], fill=config['text_color'], width=3)
+        draw.line([(30, line_y), (W - 30, line_y)], fill=config['text_color'], width=3)
 
         info_items = [
             {'label': "품 목 명", 'value': f": {item_name}"},
@@ -1961,7 +1961,7 @@ class InspectionProgram:
         draw.text((config['layout']['table_value_x'] + draw.textlength(f": {qty_text}", font=fonts['quantity']) + 5, y_pos), "EA", font=fonts['unit'], fill=config['text_color'])
 
         footer_y = H - config['layout']['footer_bottom_margin']
-        draw.line([(config['padding'], footer_y - config['layout']['footer_line_margin']), (W - config['padding'], footer_y - config['layout']['footer_line_margin'])], fill=config['text_color'], width=1)
+        draw.line([(30, footer_y - config['layout']['footer_line_margin']), (W - 30, footer_y - config['layout']['footer_line_margin'])], fill=config['text_color'], width=1)
         footer_text = f"ID: {defect_box_id} | 생성일: {creation_date} | 작업자: {worker_name}"
         draw.text((config['padding'], footer_y), footer_text, font=fonts['footer'], fill=config['text_color'])
 
@@ -3134,11 +3134,11 @@ class InspectionProgram:
         config = {
             'size': (800, 400), 'bg_color': "white", 'text_color': "black", 'padding': 30,
             'font_path': "C:/Windows/Fonts/malgun.ttf",
-            'font_sizes': {'title': 48, 'header': 20, 'body': 22, 'quantity': 40, 'unit': 20, 'footer': 16,},
+            'font_sizes': {'title': 48, 'header': 32, 'body': 34, 'quantity': 70, 'unit': 32, 'footer': 16,},
             'qr_code': {'size': 220, 'box_size': 10, 'border': 4,},
             'layout': {
                 'title_top_margin': 25, 'header_line_margin': 15, 'content_top_margin': 30,
-                'table_line_height': 45, 'table_header_x': 50, 'table_value_x': 170,
+                'table_line_height': 48, 'table_header_x': 50, 'table_value_x': 180,
                 'footer_bottom_margin': 40, 'footer_line_margin': 15,
             }
         }
@@ -3169,9 +3169,9 @@ class InspectionProgram:
             title_w, title_h = title_bbox[2] - title_bbox[0], title_bbox[3] - title_bbox[1]
             title_x, title_y = (W - title_w) / 2, config['layout']['title_top_margin']
             draw_obj.text((title_x, title_y), title_text, font=fonts['title'], fill=config['text_color'])
-            
+
             line_y = title_y + title_h + config['layout']['header_line_margin']
-            draw_obj.line([(config['padding'], line_y), (W - config['padding'], line_y)], fill=config['text_color'], width=3)
+            draw_obj.line([(30, line_y), (W - 30, line_y)], fill=config['text_color'], width=3)
             return line_y
 
         def draw_info_table(draw_obj, start_y):
@@ -3199,7 +3199,7 @@ class InspectionProgram:
         def draw_footer(draw_obj):
             footer_y = H - config['layout']['footer_bottom_margin']
             line_y = footer_y - config['layout']['footer_line_margin']
-            draw_obj.line([(config['padding'], line_y), (W - config['padding'], line_y)], fill=config['text_color'], width=1)
+            draw_obj.line([(30, line_y), (W - 30, line_y)], fill=config['text_color'], width=1)
             footer_text = f"잔량 ID: {remnant_id}   |   생성일: {creation_date}   |   작업자: {worker_name}"
             draw_obj.text((config['padding'], footer_y), footer_text, font=fonts['footer'], fill=config['text_color'])
 
