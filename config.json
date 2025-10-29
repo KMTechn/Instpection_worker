@@ -1,7 +1,7 @@
 {
     "REPO_OWNER": "KMTechn",
     "REPO_NAME": "Inspection_worker",
-    "APP_VERSION": "v2.0.8",
+    "APP_VERSION": "v2.0.11",
     "remnant_base_folder": "C:/Sync/labels/remnant_labels",
     "defective_base_folder": "C:/Sync/labels/defective_labels"
 }

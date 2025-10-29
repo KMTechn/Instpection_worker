@@ -148,6 +148,9 @@ config = ConfigManager()
 # #####################################################################
 # # 자동 업데이트 기능
 # #####################################################################
+REPO_OWNER = "KMTechn"
+REPO_NAME = "Inspection_worker"
+CURRENT_VERSION = "v2.0.11"
 
 def check_for_updates(app_instance):
     """GitHub에서 최신 릴리스를 확인합니다."""
